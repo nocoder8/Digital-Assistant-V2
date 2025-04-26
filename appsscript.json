@@ -1,0 +1,24 @@
+{
+  "timeZone": "Asia/Kolkata",
+  "dependencies": {
+    "enabledAdvancedServices": []
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/script.scriptapp",
+    "https://www.googleapis.com/auth/script.container.ui",
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/script.send_mail"
+  ],
+  "webapp": {
+    "executeAs": "USER_ACCESSING",
+    "access": "MYSELF"
+  },
+  "executionApi": {
+    "access": "MYSELF"
+  }
+}

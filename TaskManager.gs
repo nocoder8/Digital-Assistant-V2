@@ -492,6 +492,7 @@ This is an automated message from your Digital Assistant.`
     // --- Skip scheduling if STATUS is 'Follow-up' OR PRIORITY is 'Follow-up' (case-insensitive) ---
     if (taskStatusLower === 'follow-up' || taskPriorityLower === 'follow-up' || taskPriorityLower === 'follow up') {
       console.log(`Skipping task due to 'Follow-up' status or priority: "${task.name}"`);
+
       return {
         success: true, 
         message: 'Task skipped due to Follow-up status or priority',
@@ -505,6 +506,7 @@ This is an automated message from your Digital Assistant.`
     // Skip paused tasks
     if (taskStatusLower === 'pause') {
       console.log('Skipping paused task:', task.name);
+
       return {
         success: true, 
         message: 'Paused task skipped',

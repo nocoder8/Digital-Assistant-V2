@@ -128,7 +128,10 @@ function startRescheduling() {
       const events = calendar.getEvents(now, oneMonthFromNow);
       events.forEach(event => {
         const desc = event.getDescription();
-        if (desc && desc.includes('Priority: P')) {
+        const title = event.getTitle(); 
+        // Check ONLY if title starts with 'Auto-Scheduled:'
+        if (title && title.startsWith('Auto-Scheduled:')) {
+          console.log(`Deleting event: "${title}" (Matched title prefix)`);
           event.deleteEvent();
         }
       });
@@ -305,7 +308,8 @@ function processPendingSheetTasks() {
             // sheetManager.updateTaskStatus(task.row, 'Pending'); 
             // Original logic was conditional:
             if (includesFollowUp) { // Use the calculated boolean
-                console.log(` -> Skipped Follow-up task ${task.name}. Status remains Follow-up.`);
+                console.log(` -> Skipped Follow-up task ${task.name}. Setting status to Follow-up.`);
+                sheetManager.updateTaskStatus(task.row, 'Follow-up'); // Set status to Follow-up AFTER skipping
             }
             // --- End restored conditional update ---
 

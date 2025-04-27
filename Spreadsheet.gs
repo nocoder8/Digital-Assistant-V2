@@ -63,7 +63,7 @@ class SheetManager {
     
     // Add data validation for Status
     const statusRule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(['Pending', 'Scheduled', 'Done', 'Pause'], true)
+      .requireValueInList(['Pending', 'Scheduled', 'Done', 'Pause', 'Follow-up'], true)
       .setAllowInvalid(false)
       .build();
     tasksSheet.getRange('E2:E1000').setDataValidation(statusRule);
@@ -94,12 +94,12 @@ class SheetManager {
         
         console.log(`Processing task object: Name="${taskName}", Priority="${taskPriority}"`);
         
-        // --- Normalize Follow-up priority ---
-        if (String(taskPriority).toLowerCase().includes('follow')) {
-          taskPriority = 'Follow-up'; // Ensure consistent lowercase 'u'
-          console.log(`Normalized priority to "Follow-up" for task "${taskName}"`);
-        }
-        // ------------------------------------
+        // // --- Normalize Follow-up priority ---
+        // if (String(taskPriority).toLowerCase().includes('follow')) {
+        //   taskPriority = 'Follow-up'; // Ensure consistent lowercase 'u'
+        //   console.log(`Normalized priority to "Follow-up" for task "${taskName}"`);
+        // }
+        // // ------------------------------------
       } else {
         // If individual parameters, use them directly
         taskName = taskNameOrObject || '';
@@ -183,7 +183,12 @@ class SheetManager {
         } else if (i === notesColIndex && notesColIndex !== -1) {
           rowData.push(taskNotes);
         } else if (i === statusColIndex && statusColIndex !== -1) {
-          rowData.push('Pending');
+          // --- Determine initial status based on priority ---
+          // const initialStatus = (String(taskPriority).toLowerCase().includes('follow')) ? 'Follow-up' : 'Pending';
+          // console.log(`Setting initial status for "${taskName}" to: "${initialStatus}"`);
+          // rowData.push(initialStatus); // Overwrite the default 'Pending' if needed
+          // --- End status determination ---
+          rowData.push('Pending'); // Always start as Pending
         } else {
           rowData.push(''); // Empty for other columns
         }
@@ -663,5 +668,46 @@ function standardizeFollowUpPriorities() {
     console.error('Error standardizing follow-up tasks:', error);
     ui.alert('Error', 'Failed to standardize follow-up tasks: ' + error.message, ui.ButtonSet.OK);
     return false;
+  }
+} 
+
+/**
+ * Manually updates the Data Validation rule for the Status column 
+ * on the existing Tasks sheet to include 'Follow-up'.
+ */
+function updateStatusValidationRule() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Tasks');
+    if (!sheet) {
+      ui.alert('Error', 'Tasks sheet not found.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Find the status column index
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const statusColIndex = headers.findIndex(header => String(header).toLowerCase() === 'status');
+    if (statusColIndex < 0) {
+      ui.alert('Error', 'Status column not found.', ui.ButtonSet.OK);
+      return;
+    }
+    const statusColumnLetter = String.fromCharCode(65 + statusColIndex); // Convert index to letter (A=0)
+
+    // Define the updated rule
+    const updatedStatusRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Pending', 'Scheduled', 'Done', 'Pause', 'Follow-up'], true)
+      .setAllowInvalid(false)
+      .build();
+
+    // Apply the rule to the entire status column (starting from row 2)
+    const rangeNotation = `${statusColumnLetter}2:${statusColumnLetter}`;
+    sheet.getRange(rangeNotation).setDataValidation(updatedStatusRule);
+
+    ui.alert('Success', 'Status column data validation updated to include Follow-up.', ui.ButtonSet.OK);
+    console.log('Status validation rule updated successfully.');
+
+  } catch (error) {
+    console.error('Error updating status validation rule:', error);
+    ui.alert('Error', 'Failed to update status validation: ' + error.message, ui.ButtonSet.OK);
   }
 } 

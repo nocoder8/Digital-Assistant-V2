@@ -119,9 +119,24 @@ function processEmailTasks() {
             
             // Process the task immediately if auto-scheduling is enabled and it's not a follow-up
             const autoSchedule = PropertiesService.getScriptProperties().getProperty('emailTaskAutoSchedule');
-            let schedulingResult = null;
+            let schedulingResult = null; // Initialize result
+            let mailSent = false; // Flag to prevent double emails
             
-            if (autoSchedule === 'true' && task.priority !== 'Follow-Up') {
+            // --- Check if it's a Follow-up OR if Auto-Schedule is off ---
+            if (task.priority === 'Follow-up') {
+              // Create a mock result for Follow-ups to trigger correct email
+              schedulingResult = {
+                success: true,
+                message: 'Task skipped - Follow-up from email processing',
+                events: []
+              };
+              console.log('EMAIL PROCESSING: Created mock scheduling result for follow-up task.');
+              // Send confirmation immediately for Follow-ups
+              sendTaskCreationConfirmation(task, userEmail, schedulingResult);
+              mailSent = true;
+            } 
+            // --- If Auto-Schedule is ON and it's NOT a Follow-up, try scheduling ---
+            else if (autoSchedule === 'true') { 
               console.log('Auto-scheduling task');
               console.log(`AUTO-SCHEDULE: Starting for task "${task.name}" at row ${task.row}`);
               
@@ -135,24 +150,33 @@ function processEmailTasks() {
               if (taskManager.hasCalendarAccess) {
                 console.log(`AUTO-SCHEDULE: Calendar access available, calling processTask for "${task.name}"`);
                 
-                // Store spreadsheet state before calling processTask
                 const beforeRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
                 console.log(`AUTO-SCHEDULE: Before processTask, spreadsheet has ${beforeRowCount} rows`);
                 
                 schedulingResult = taskManager.processTask(task, task.name);
                 
-                // Check spreadsheet state after calling processTask
                 const afterRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
                 console.log(`AUTO-SCHEDULE: After processTask, spreadsheet has ${afterRowCount} rows (change: ${afterRowCount - beforeRowCount})`);
                 
                 console.log('Scheduling result:', JSON.stringify(schedulingResult));
+
+                // Send confirmation based on scheduling result
+                sendTaskCreationConfirmation(task, userEmail, schedulingResult);
+                mailSent = true;
               } else {
                 console.warn('Calendar access not available, task created but not scheduled');
+                // Send basic confirmation if scheduling wasn't attempted
+                sendTaskCreationConfirmation(task, userEmail, { success: false, message: 'Task created, auto-scheduling skipped (no calendar access)' });
+                mailSent = true;
               }
             }
             
-            // Send confirmation with or without scheduling info
-            sendTaskCreationConfirmation(task, userEmail, schedulingResult);
+            // Send basic confirmation ONLY if not a Follow-up AND auto-schedule is OFF AND mail hasn't been sent
+            if (task.priority !== 'Follow-up' && autoSchedule !== 'true' && !mailSent) {
+                console.log('EMAIL PROCESSING: Sending basic Task Created confirmation (Auto-schedule OFF).');
+                sendTaskCreationConfirmation(task, userEmail, { success: true, message: 'Task created, auto-scheduling is off.' }); 
+            }
+            // --- End Updated Confirmation Logic ---
             
             // Mark as read and add processed label
             message.markRead();

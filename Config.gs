@@ -269,7 +269,7 @@ function processPendingSheetTasks() {
         const schedulingResult = taskManager.processTask(task); // processTask handles Follow-up/Pause check
         console.log(` -> Result: ${schedulingResult.message}`);
 
-        if (schedulingResult.success && schedulingResult.message !== 'Follow-up task skipped' && schedulingResult.message !== 'Paused task skipped') {
+        if (schedulingResult.success && (!schedulingResult.message || !schedulingResult.message.toLowerCase().includes('skipped'))) {
             processedCount++;
             // Send confirmation email only if actually scheduled (processTask updates sheet status)
             const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
@@ -301,12 +301,15 @@ function processPendingSheetTasks() {
             // console.log(`DEBUG: Does message include 'follow-up'? ${includesFollowUp}`);
             // --- End diagnostic logging ---
             
-            // --- Set status to Pending for skipped Follow-ups if needed ---
+            // --- Restore conditional status update ---
+            // console.log(` -> Task "${task.name}" was skipped (Message: ${schedulingResult.message}). Forcing attempt to set status to Pending.`);
+            // sheetManager.updateTaskStatus(task.row, 'Pending'); 
+            // Original logic was conditional:
             if (includesFollowUp) { // Use the calculated boolean
                 console.log(` -> Skipped Follow-up task ${task.name}. Ensuring status is Pending.`);
                 sheetManager.updateTaskStatus(task.row, 'Pending'); 
             }
-            // --- End Status Update for Skipped Follow-ups ---
+            // --- End restored conditional update ---
 
             // --- Send Skipped Email ---
             const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
@@ -482,6 +485,10 @@ function sendTaskCreationConfirmation(task, email, schedulingResult) {
   console.log(`CONFIRMATION EMAIL: Preparing for task "${task.name}" with row=${task.row}`);
   console.log('CONFIRMATION EMAIL: Scheduling result:', JSON.stringify(schedulingResult));
   
+  // --- Add Version Marker Log ---
+  console.log('>>> Running sendTaskCreationConfirmation v3 (Config.gs) <<<'); 
+  // --- End Version Marker Log ---
+
   let subject = '';
   let body = '';
   const taskDetails = `Task: ${task.name}\\nPriority: ${task.priority || 'Not set'}\\nTime Block: ${task.timeBlock || 'Default'} minutes\\nSource Task Row: ${task.row}\\nNotes: ${task.notes || 'None'}`; // Escaped newlines
@@ -513,8 +520,15 @@ function sendTaskCreationConfirmation(task, email, schedulingResult) {
   
   // Case 2: Task processing was successful, but it was skipped (Follow-up/Paused)
   } else if (schedulingResult && schedulingResult.success && schedulingResult.message && schedulingResult.message.toLowerCase().includes('skipped')) {
-      subject = `Task Processed (Skipped): ${task.name}`;
-      console.log(`CONFIRMATION EMAIL: Skipped task subject: "${subject}"`);
+      // --- Differentiate Follow-up skips from other skips (e.g., Paused) ---
+      if (schedulingResult.message.toLowerCase().includes('follow-up')) {
+          subject = `Follow-up Created: ${task.name}`; // Specific subject for Follow-ups
+          console.log(`CONFIRMATION EMAIL: Follow-up Skipped task subject: "${subject}"`);
+      } else {
+          subject = `Task Processed (Skipped): ${task.name}`; // Generic subject for other skips
+          console.log(`CONFIRMATION EMAIL: Generic Skipped task subject: "${subject}"`);
+      }
+      // --- End differentiation ---
       body = `Your task was processed but skipped (not scheduled):\\n\\n${taskDetails}\\n\\nReason: ${schedulingResult.message}`;
       
   // Case 3: Task processing failed

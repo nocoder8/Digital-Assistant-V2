@@ -217,6 +217,10 @@ class SheetManager {
    */
   updateTaskStatus(row, status) {
     try {
+      // --- Add Entry Log ---
+      console.log(`>>> ENTERING updateTaskStatus: Attempting to set row ${row} to status "${status}"`);
+      // --- End Entry Log ---
+      
       console.log(`Updating task status at row ${row} to "${status}"`);
       
       const sheet = this.getTasksSheet();

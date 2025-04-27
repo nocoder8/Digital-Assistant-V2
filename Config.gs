@@ -229,11 +229,10 @@ function resetEverything() {
 /**
  * Process the edited task after a delay
  */
-function processPendingSheetTasks() { 
+function processPendingSheetTasks() {
+  console.log(">>>> STARTING processPendingSheetTasks - LATEST VERSION CHECK <<<<");
   // --- Remove blatant execution marker ---
   // console.log(">>>> RUNNING LATEST Config.gs v1 - " + new Date().toISOString() + " <<<<");
-  // --- End marker ---
-  
   const lock = LockService.getScriptLock();
   // Allow more time as it might process multiple tasks
   if (!lock.tryLock(60000)) { // Wait up to 60 seconds

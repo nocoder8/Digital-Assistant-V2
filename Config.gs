@@ -305,8 +305,7 @@ function processPendingSheetTasks() {
             // sheetManager.updateTaskStatus(task.row, 'Pending'); 
             // Original logic was conditional:
             if (includesFollowUp) { // Use the calculated boolean
-                console.log(` -> Skipped Follow-up task ${task.name}. Ensuring status is Pending.`);
-                sheetManager.updateTaskStatus(task.row, 'Pending'); 
+                console.log(` -> Skipped Follow-up task ${task.name}. Status remains Follow-up.`);
             }
             // --- End restored conditional update ---
 
@@ -490,7 +489,7 @@ function sendTaskCreationConfirmation(task, email, schedulingResult) {
 
   let subject = '';
   let body = '';
-  const taskDetails = `Task: ${task.name}\\nPriority: ${task.priority || 'Not set'}\\nTime Block: ${task.timeBlock || 'Default'} minutes\\nSource Task Row: ${task.row}\\nNotes: ${task.notes || 'None'}`; // Escaped newlines
+  const taskDetails = `Task: ${task.name}\nPriority: ${task.priority || 'Not set'}\nTime Block: ${task.timeBlock || 'Default'} minutes\nSource Task Row: ${task.row}\nNotes: ${task.notes || 'None'}`;
 
   // Case 1: Task was successfully scheduled
   if (schedulingResult && schedulingResult.success && schedulingResult.events && schedulingResult.events.length > 0 && !schedulingResult.message.toLowerCase().includes('skipped')) { // Check for success AND not skipped
@@ -515,7 +514,7 @@ function sendTaskCreationConfirmation(task, email, schedulingResult) {
     subject = `Task Scheduled: ${task.name} ${timeStr} ${dateStr}`;
     console.log(`CONFIRMATION EMAIL: Scheduled task subject: "${subject}"`);
 
-    body = `Your task has been scheduled:\\n\\n${taskDetails}\\n\\nScheduled for: ${fullDateTimeStr}\\n\\nYou can view this task in your calendar.`;
+    body = `Your task has been scheduled:\n\n${taskDetails}\n\nScheduled for: ${fullDateTimeStr}\n\nYou can view this task in your calendar.`;
   
   // Case 2: Task processing was successful, but it was skipped (Follow-up/Paused)
   } else if (schedulingResult && schedulingResult.success && schedulingResult.message && schedulingResult.message.toLowerCase().includes('skipped')) {
@@ -528,29 +527,29 @@ function sendTaskCreationConfirmation(task, email, schedulingResult) {
           console.log(`CONFIRMATION EMAIL: Generic Skipped task subject: "${subject}"`);
       }
       // --- End differentiation ---
-      body = `Your task was processed but skipped (not scheduled):\\n\\n${taskDetails}\\n\\nReason: ${schedulingResult.message}`;
+      body = `Your task was processed but skipped (not scheduled):\n\n${taskDetails}\n\nReason: ${schedulingResult.message}`;
       
   // Case 3: Task processing failed
   } else if (schedulingResult && !schedulingResult.success) {
       subject = `Error Processing Task: ${task.name}`;
       console.log(`CONFIRMATION EMAIL: Error processing task subject: "${subject}"`);
-      body = `There was an error processing your task:\\n\\n${taskDetails}\\n\\nError: ${schedulingResult.message}`;
+      body = `There was an error processing your task:\n\n${taskDetails}\n\nError: ${schedulingResult.message}`;
       
   // Case 4: Fallback / Unexpected scenario (e.g., schedulingResult is null/undefined)
   } else {
       subject = `Task Update: ${task.name}`;
       console.log(`CONFIRMATION EMAIL: Fallback task subject: "${subject}"`);
-      body = `Task processed, but scheduling status is unclear:\\n\\n${taskDetails}\\n\\nScheduling Result: ${JSON.stringify(schedulingResult)}`;
+      body = `Task processed, but scheduling status is unclear:\n\n${taskDetails}\n\nScheduling Result: ${JSON.stringify(schedulingResult)}`;
   }
 
 
   try {
-    console.log(`CONFIRMATION EMAIL BODY (Final Check):\\n---\\n${body}\\n---`); // Escaped newlines for multi-line body
+    console.log(`CONFIRMATION EMAIL BODY (Final Check):\n---\n${body}\n---`); // Escaped newlines for multi-line body
 
     MailApp.sendEmail({
       to: email,
       subject: subject,
-      body: body.replace(/\\\\n/g, '\\n') // Replace escaped newlines with actual newlines for sending
+      body: body
     });
     console.log(`CONFIRMATION EMAIL: Successfully sent email to ${email} for task "${task.name}"`);
   } catch (e) {

@@ -93,6 +93,13 @@ class SheetManager {
         taskNotes = taskObj.notes || '';
         
         console.log(`Processing task object: Name="${taskName}", Priority="${taskPriority}"`);
+        
+        // --- Normalize Follow-up priority ---
+        if (String(taskPriority).toLowerCase().includes('follow')) {
+          taskPriority = 'Follow-up'; // Ensure consistent lowercase 'u'
+          console.log(`Normalized priority to "Follow-up" for task "${taskName}"`);
+        }
+        // ------------------------------------
       } else {
         // If individual parameters, use them directly
         taskName = taskNameOrObject || '';
@@ -269,11 +276,7 @@ class SheetManager {
 
       // Determine final status based on priority and sheet value
       if (!statusValue) { // If status cell is blank
-        if (priorityLower === 'follow-up' || priorityLower === 'follow up') {
-          finalStatus = 'Follow-up'; // Default Status to Follow-up if Priority is Follow-up
-        } else {
-          finalStatus = 'Pending'; // Otherwise default blank status to Pending
-        }
+        finalStatus = 'Pending'; // Always default blank status to Pending
       } else {
         finalStatus = statusValue; // Use the value from the sheet if not blank
       }
@@ -361,6 +364,36 @@ class SheetManager {
     } catch (error) {
       console.error(`Error getting task from row ${row}:`, error);
       return null;
+    }
+  }
+
+  /**
+   * Get the current status value directly from the sheet cell for a specific row.
+   * @param {number} row - The 1-indexed row number.
+   * @returns {string} The value in the Status cell.
+   */
+  getTaskStatusDirectly(row) {
+    try {
+      const sheet = this.getTasksSheet();
+      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const statusColIndex = headers.findIndex(header => String(header).toLowerCase() === 'status');
+      
+      if (statusColIndex < 0) {
+        console.error('getTaskStatusDirectly: Status column not found');
+        return 'ERROR: Status column not found';
+      }
+      
+      // Ensure row is valid
+      if (row <= 1 || row > sheet.getLastRow()) {
+          console.error(`getTaskStatusDirectly: Invalid row number ${row}`);
+          return `ERROR: Invalid row ${row}`;
+      }
+
+      const statusValue = sheet.getRange(row, statusColIndex + 1).getValue();
+      return String(statusValue); // Ensure it's returned as a string
+    } catch (error) {
+      console.error(`Error getting direct status for row ${row}:`, error);
+      return `ERROR: ${error.message}`;
     }
   }
 

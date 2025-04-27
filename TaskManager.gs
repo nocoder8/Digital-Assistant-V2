@@ -489,12 +489,12 @@ This is an automated message from your Digital Assistant.`
     const taskPriorityLower = String(taskPriority).toLowerCase().trim();
     const taskStatusLower = String(task.status || '').toLowerCase().trim();
 
-    // --- Skip scheduling if STATUS is 'Follow-up' ---
-    if (taskStatusLower === 'follow-up') {
-      console.log(`Skipping task due to 'Follow-up' status: "${task.name}"`);
+    // --- Skip scheduling if STATUS is 'Follow-up' OR PRIORITY is 'Follow-up' (case-insensitive) ---
+    if (taskStatusLower === 'follow-up' || taskPriorityLower === 'follow-up' || taskPriorityLower === 'follow up') {
+      console.log(`Skipping task due to 'Follow-up' status or priority: "${task.name}"`);
       return {
         success: true, 
-        message: 'Task skipped due to Follow-up status',
+        message: 'Task skipped due to Follow-up status or priority',
         events: [] // Ensure events array is returned
       };
     }

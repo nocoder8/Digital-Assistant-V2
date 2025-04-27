@@ -218,7 +218,7 @@ function parseFollowUpFormat(subject, emailUrl) {
   
   return {
     name: taskName,
-    priority: 'Follow-Up',
+    priority: 'Follow-up',
     timeBlock: 30, // Default time block for follow-ups
     notes: `Email Link: ${emailUrl}`,
     status: 'Pending'

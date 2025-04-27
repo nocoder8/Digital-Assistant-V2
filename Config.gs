@@ -230,6 +230,10 @@ function resetEverything() {
  * Process the edited task after a delay
  */
 function processPendingSheetTasks() { 
+  // --- Remove blatant execution marker ---
+  // console.log(">>>> RUNNING LATEST Config.gs v1 - " + new Date().toISOString() + " <<<<");
+  // --- End marker ---
+  
   const lock = LockService.getScriptLock();
   // Allow more time as it might process multiple tasks
   if (!lock.tryLock(60000)) { // Wait up to 60 seconds
@@ -282,9 +286,45 @@ function processPendingSheetTasks() {
         } else if (!schedulingResult.success) {
             // Handle scheduling errors if needed - maybe update status to Error?
             console.error(`Failed to schedule task ${task.name}: ${schedulingResult.message}`);
-        } else {
+            // --- Send Error Email ---
+            const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
+            if (userEmail) {
+              sendTaskCreationConfirmation(task, userEmail, schedulingResult); // Send error notification
+            }
+            // --- End Send Error Email ---
+        } else { // Implicitly: schedulingResult.success is true, but message indicates skipped
             skippedCount++; // Count skipped Follow-up/Paused
+            
+            // --- Remove diagnostic logging ---
+            // console.log(`DEBUG: Checking skip message for status update. Message: "${schedulingResult.message}"`);
+            const includesFollowUp = schedulingResult.message && schedulingResult.message.toLowerCase().includes('follow-up');
+            // console.log(`DEBUG: Does message include 'follow-up'? ${includesFollowUp}`);
+            // --- End diagnostic logging ---
+            
+            // --- Set status to Pending for skipped Follow-ups if needed ---
+            if (includesFollowUp) { // Use the calculated boolean
+                console.log(` -> Skipped Follow-up task ${task.name}. Ensuring status is Pending.`);
+                sheetManager.updateTaskStatus(task.row, 'Pending'); 
+            }
+            // --- End Status Update for Skipped Follow-ups ---
+
+            // --- Send Skipped Email ---
+            const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
+            if (userEmail) {
+              sendTaskCreationConfirmation(task, userEmail, schedulingResult); // Send skipped notification
+            }
+            // --- End Send Skipped Email ---
         }
+
+        // --- Add post-processing status check ---
+        try {
+          const currentSheetStatus = sheetManager.getTaskStatusDirectly(task.row); // Requires new helper function
+          console.log(`POST-PROCESSING CHECK: Task "${task.name}" (Row ${task.row}) final status in sheet: "${currentSheetStatus}"`);
+        } catch (checkError) {
+          console.error(`Error checking final status for task row ${task.row}: ${checkError}`);
+        }
+        // --- End post-processing status check ---
+
     }
     // --- End loop --- 
 
@@ -433,71 +473,75 @@ function standardizeFollowUpPrioritiesFromMenu() {
 }
 
 /**
- * Send confirmation email for task creation
+ * Send confirmation email for task creation/processing
  * @param {Object} task - The task object (should include row)
  * @param {string} email - User email address
  * @param {Object} schedulingResult - The result object from processTask
  */
 function sendTaskCreationConfirmation(task, email, schedulingResult) {
-  console.log(`CONFIRMATION EMAIL: Preparing for task \"${task.name}\" with row=${task.row}`);
+  console.log(`CONFIRMATION EMAIL: Preparing for task "${task.name}" with row=${task.row}`);
   console.log('CONFIRMATION EMAIL: Scheduling result:', JSON.stringify(schedulingResult));
   
-  // Ensure we have successful scheduling and event details
-  if (!schedulingResult || !schedulingResult.success || !schedulingResult.events || schedulingResult.events.length === 0) {
-    console.log(`CONFIRMATION EMAIL: No successful event to confirm for task \"${task.name}\". Skipping email.`);
-    return; 
+  let subject = '';
+  let body = '';
+  const taskDetails = `Task: ${task.name}\\nPriority: ${task.priority || 'Not set'}\\nTime Block: ${task.timeBlock || 'Default'} minutes\\nSource Task Row: ${task.row}\\nNotes: ${task.notes || 'None'}`; // Escaped newlines
+
+  // Case 1: Task was successfully scheduled
+  if (schedulingResult && schedulingResult.success && schedulingResult.events && schedulingResult.events.length > 0 && !schedulingResult.message.toLowerCase().includes('skipped')) { // Check for success AND not skipped
+    const scheduledEvent = schedulingResult.events[0]; 
+    const startTime = new Date(scheduledEvent.start); 
+
+    if (!startTime || !(startTime instanceof Date) || isNaN(startTime)) {
+       console.error(`CONFIRMATION EMAIL: Invalid start time received for task "${task.name}". Cannot format email.`);
+       // Fallback to a simpler email? Or just return? Let's return for now.
+       return;
+    }
+    console.log(`CONFIRMATION EMAIL: Event start time from result: ${startTime} (Type: ${typeof startTime})`);
+
+    const timeZone = PropertiesService.getScriptProperties().getProperty('timeZone') || 'GMT';
+    console.log(`CONFIRMATION EMAIL: Using time zone: ${timeZone}`);
+
+    const timeStr = Utilities.formatDate(startTime, timeZone, '@h:mm a');
+    const dateStr = Utilities.formatDate(startTime, timeZone, "'of' EEE (M/d)");
+    const fullDateTimeStr = Utilities.formatDate(startTime, timeZone, 'EEEE, MMMM d, yyyy hh:mm a'); 
+    console.log(`CONFIRMATION EMAIL: Formatted time: ${timeStr}, Formatted date: ${dateStr}, Full: ${fullDateTimeStr}`);
+
+    subject = `Task Scheduled: ${task.name} ${timeStr} ${dateStr}`;
+    console.log(`CONFIRMATION EMAIL: Scheduled task subject: "${subject}"`);
+
+    body = `Your task has been scheduled:\\n\\n${taskDetails}\\n\\nScheduled for: ${fullDateTimeStr}\\n\\nYou can view this task in your calendar.`;
+  
+  // Case 2: Task processing was successful, but it was skipped (Follow-up/Paused)
+  } else if (schedulingResult && schedulingResult.success && schedulingResult.message && schedulingResult.message.toLowerCase().includes('skipped')) {
+      subject = `Task Processed (Skipped): ${task.name}`;
+      console.log(`CONFIRMATION EMAIL: Skipped task subject: "${subject}"`);
+      body = `Your task was processed but skipped (not scheduled):\\n\\n${taskDetails}\\n\\nReason: ${schedulingResult.message}`;
+      
+  // Case 3: Task processing failed
+  } else if (schedulingResult && !schedulingResult.success) {
+      subject = `Error Processing Task: ${task.name}`;
+      console.log(`CONFIRMATION EMAIL: Error processing task subject: "${subject}"`);
+      body = `There was an error processing your task:\\n\\n${taskDetails}\\n\\nError: ${schedulingResult.message}`;
+      
+  // Case 4: Fallback / Unexpected scenario (e.g., schedulingResult is null/undefined)
+  } else {
+      subject = `Task Update: ${task.name}`;
+      console.log(`CONFIRMATION EMAIL: Fallback task subject: "${subject}"`);
+      body = `Task processed, but scheduling status is unclear:\\n\\n${taskDetails}\\n\\nScheduling Result: ${JSON.stringify(schedulingResult)}`;
   }
 
-  // Extract event details (use the first event if multiple were somehow created)
-  const scheduledEvent = schedulingResult.events[0]; 
-  const startTime = new Date(scheduledEvent.start); // Re-create Date object if needed
-
-  if (!startTime || !(startTime instanceof Date) || isNaN(startTime)) {
-     console.error(`CONFIRMATION EMAIL: Invalid start time received for task \"${task.name}\". Cannot format email.`);
-     return;
-  }
-  console.log(`CONFIRMATION EMAIL: Event start time from result: ${startTime} (Type: ${typeof startTime})`);
-
-  const timeZone = PropertiesService.getScriptProperties().getProperty('timeZone') || 'GMT';
-  console.log(`CONFIRMATION EMAIL: Using time zone: ${timeZone}`);
-
-  // Format time and date for email subject and body
-  const timeStr = Utilities.formatDate(startTime, timeZone, '@h:mm a');
-  const dateStr = Utilities.formatDate(startTime, timeZone, "'of' EEE (M/d)");
-  const fullDateTimeStr = Utilities.formatDate(startTime, timeZone, 'EEEE, MMMM d, yyyy hh:mm a'); 
-  console.log(`CONFIRMATION EMAIL: Formatted time: ${timeStr}, Formatted date: ${dateStr}, Full: ${fullDateTimeStr}`);
-
-  const subject = `Task Scheduled: ${task.name} ${timeStr} ${dateStr}`;
-  console.log(`CONFIRMATION EMAIL: Scheduled task subject: \"${subject}\"`);
-
-  // --- Include Row Number in Email Body --- 
-  const body = `Your task has been scheduled:
-
-Task: ${task.name}
-Priority: ${task.priority || 'Not set'}
-Time Block: ${task.timeBlock || 'Default'} minutes
-Source Task Row: ${task.row} 
-
-Scheduled for: ${fullDateTimeStr}
-
-Notes: ${task.notes || 'None'}
-
-You can view this task in your calendar.`;
-  // --- End Body Modification ---
 
   try {
-    // ADD THIS LINE FOR DEBUGGING:
-    console.log(`CONFIRMATION EMAIL BODY (Final Check):\n---\n${body}\n---`); 
+    console.log(`CONFIRMATION EMAIL BODY (Final Check):\\n---\\n${body}\\n---`); // Escaped newlines for multi-line body
 
     MailApp.sendEmail({
       to: email,
       subject: subject,
-      body: body
+      body: body.replace(/\\\\n/g, '\\n') // Replace escaped newlines with actual newlines for sending
     });
-    console.log(`CONFIRMATION EMAIL: Successfully sent email to ${email} for task \"${task.name}\"`);
+    console.log(`CONFIRMATION EMAIL: Successfully sent email to ${email} for task "${task.name}"`);
   } catch (e) {
-    console.error(`CONFIRMATION EMAIL: Failed to send email for task \"${task.name}\": ${e}`);
-    // Consider re-throwing or logging more details if needed
+    console.error(`CONFIRMATION EMAIL: Failed to send email for task "${task.name}": ${e}`);
   }
 }
 

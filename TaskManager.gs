@@ -264,8 +264,8 @@ This is an automated message from your Digital Assistant.`
   processPendingTasks() {
     if (!this.settings) this.initialize();
     
-    // Get all pending tasks
-    const pendingTasks = sheetManager.getPendingTasks();
+    // Get all pending tasks using the correct method
+    const pendingTasks = sheetManager.getTasksByStatus('Pending'); // Corrected call
     console.log(`Found ${pendingTasks.length} pending tasks`);
     
     // Process tasks in priority order

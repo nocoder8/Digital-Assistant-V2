@@ -115,6 +115,16 @@ function installForProduction() {
  * Start rescheduling all tasks
  */
 function startRescheduling() {
+  // --- Add Lock Service ---
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) { // Wait 10 seconds for the lock
+    console.log('startRescheduling could not obtain lock. Another process likely running.');
+    showStatus('Cannot start rescheduling now, another process is running. Please try again later.');
+    return; 
+  }
+  console.log('startRescheduling acquired lock.');
+  // --- End Lock Service ---
+
   showStatus('Starting rescheduling process...');
   
   Promise.resolve()
@@ -161,7 +171,11 @@ function startRescheduling() {
     .catch(error => {
       console.error('Rescheduling failed:', error);
       showStatus('Error during rescheduling: ' + error.message);
-    });
+    })
+    .finally(() => { // --- Release Lock --- 
+      lock.releaseLock();
+      console.log('startRescheduling released lock.');
+    }); // --- End Release Lock ---
 }
 
 /**

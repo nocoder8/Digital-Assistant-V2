@@ -460,20 +460,19 @@ function formatDate(date) {
  * @param {string} labelName - Name of the label
  */
 function ensureLabelExists(labelName) {
-  try {
-    // Try to get the label
-    const label = GmailApp.getUserLabelByName(labelName);
-    if (!label) {
-      // Create if it doesn't exist
-      GmailApp.createLabel(labelName);
-    }
-  } catch (error) {
-    console.error(`Error ensuring label ${labelName} exists:`, error);
-    // Create the label anyway
+  // Check if the label exists
+  if (!GmailApp.getUserLabelByName(labelName)) {
     try {
+      // Create the label if it doesn't exist
       GmailApp.createLabel(labelName);
-    } catch (e) {
-      // Ignore if it already exists
+      console.log(`Created Gmail label: ${labelName}`);
+    } catch (error) {
+      // Handle potential race condition or other error during creation
+      console.error(`Error creating label ${labelName}: ${error.message}`);
+      // Check again in case it was created by another process
+      if (!GmailApp.getUserLabelByName(labelName)) {
+         console.error(`Failed to ensure label ${labelName} exists.`);
+      }
     }
   }
 }
@@ -1321,5 +1320,119 @@ function debugEmailNotification() {
   } catch (error) {
     console.error("Debug error:", error);
     ui.alert("Error", "Debug failed: " + error.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Sends a daily email prompt asking for tasks for the day.
+ * Should be triggered by a time-driven trigger daily around 10 AM.
+ */
+function sendDailyTaskPrompt() {
+  const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
+  if (!userEmail) {
+    console.error('User email not configured for daily prompt. Please run setup first.');
+    return;
+  }
+
+  const subject = "What tasks will you tackle today? [Daily Task Entry]";
+  const body = `Reply to this email with your tasks for today, one per line, like this:
+
+1 - Task Name 1, 30 Mins
+2 - Task Name 2, 60 Mins
+
+The script will add these as P1 tasks to your sheet.
+`;
+
+  try {
+    MailApp.sendEmail({
+      to: userEmail,
+      subject: subject,
+      body: body
+    });
+    console.log(`Daily task prompt email sent to ${userEmail}`);
+  } catch (error) {
+    console.error(`Error sending daily task prompt email: ${error.message}`);
+  }
+}
+
+/**
+ * Parses tasks from the body of a reply to the daily prompt email.
+ * @param {GmailMessage} message - The reply email message.
+ * @param {string} userEmail - The user's email address.
+ * @returns {boolean} True if tasks were successfully parsed and added, false otherwise.
+ */
+function parseAndAddDailyTasksFromReply(message, userEmail) {
+  console.log('Attempting to parse tasks from daily prompt reply.');
+  const body = message.getPlainBody();
+  const lines = body.split('\\n');
+  let tasksAdded = 0;
+
+  const taskRegex = /^\\s*\\d+\\s*-\\s*(.+?)\\s*,\\s*(\\d+)\\s*(?:Mins|Min|Minutes|Minute)/i;
+  // Example format: 1 - Task Name, 30 Mins
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue; // Skip empty lines
+
+    const match = trimmedLine.match(taskRegex);
+    if (match && match[1] && match[2]) {
+      const taskName = match[1].trim();
+      const timeBlock = parseInt(match[2], 10);
+
+      if (taskName && !isNaN(timeBlock) && timeBlock > 0) {
+        console.log(`Parsed daily task: Name="${taskName}", Time=${timeBlock}`);
+        try {
+          const task = {
+            name: taskName,
+            priority: 'P1', // Force P1 for daily tasks
+            timeBlock: timeBlock,
+            notes: `Added from daily email reply. Original email: ${message.getThread().getPermalink()}`,
+            status: 'Pending'
+            // Add deadline parsing if needed in the future
+          };
+          const addedTask = sheetManager.addTask(task);
+          if (addedTask && addedTask.success) {
+            console.log(`Added daily task "${taskName}" to sheet.`);
+            tasksAdded++;
+            // Optional: Add row number back if needed for auto-scheduling (though unlikely needed here)
+            // if (addedTask.row) { task.row = addedTask.row; }
+            
+            // Decide if auto-scheduling should apply to these tasks
+            // const autoSchedule = PropertiesService.getScriptProperties().getProperty('emailTaskAutoSchedule');
+            // if (autoSchedule === 'true' && task.row) {
+            //    // Initialize task manager if needed...
+            //    // taskManager.processTask(task); 
+            // }
+
+          } else {
+             console.warn(`Failed to add daily task "${taskName}" to sheet.`);
+          }
+        } catch (e) {
+          console.error(`Error adding daily task "${taskName}" to sheet: ${e}`);
+        }
+      } else {
+        console.log(`Skipping line (invalid format or data): "${trimmedLine}"`);
+      }
+    } else {
+       console.log(`Skipping line (did not match regex): "${trimmedLine}"`);
+    }
+  }
+
+  if (tasksAdded > 0) {
+     // Send a single confirmation for all tasks added from this email
+     try {
+       MailApp.sendEmail({
+         to: userEmail,
+         subject: `Daily Tasks Added: ${tasksAdded} tasks created`,
+         body: `Successfully added ${tasksAdded} tasks from your daily reply.\n\nEmail Link: ${message.getThread().getPermalink()}`
+       });
+     } catch (emailError) {
+       console.error(`Error sending daily task confirmation email: ${emailError}`);
+     }
+     return true; // Indicate success
+  } else {
+     console.log('No valid tasks found in the daily reply.');
+     // Optionally send an email if no tasks were parsed?
+     return false; // Indicate no tasks were processed from this reply
   }
 } 

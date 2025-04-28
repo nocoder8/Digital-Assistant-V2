@@ -14,6 +14,10 @@ function processEmailTasks() {
     return; // Exit if lock couldn't be obtained
   }
 
+  // --- Track processed thread IDs ---
+  const processedThreadIds = new Set();
+  // ---------------------------------
+
   try {
     console.log('============ EMAIL TASK PROCESSING START ============');
     console.log(`Process started at: ${new Date().toLocaleString()}`);
@@ -44,99 +48,135 @@ function processEmailTasks() {
       
       // Define search query with more flexibility
       // Use a broader search that will find more emails, then filter them in code
-      const taskEmailSearch = `from:${userEmail} newer_than:1d -label:Task-Processed -label:Task-Error-Processed`;
+      // Only search last 15 mins since trigger runs frequently
+      const taskEmailSearch = `from:${userEmail} newer_than:15m -label:Task-Processed -label:Task-Error-Processed`;
       
       console.log('Using search query:', taskEmailSearch);
       
-      // Search for matching emails
-      const gmail = GmailApp.search(taskEmailSearch);
-      console.log(`Found ${gmail.length} email threads matching the basic criteria`);
+      // Search for matching emails - THIS GETS ALL RECENT UNPROCESSED EMAILS
+      const allRecentThreads = GmailApp.search(taskEmailSearch);
+      console.log(`Found ${allRecentThreads.length} potentially relevant email threads`);
       
-      // Filter threads that actually have task markers in the subject
-      const taskThreads = gmail.filter(thread => {
-        const subject = thread.getFirstMessageSubject();
-        return subject.toLowerCase().includes('#td') || subject.toLowerCase().includes('#fup');
-      });
+      // --- REMOVE Filtering by subject here, process all threads ---
+      // const taskThreads = allRecentThreads.filter(thread => { ... });
+      // console.log(`Found ${taskThreads.length} threads with task markers (#td or #fup)`);
+      // -------------------------------------------------------------
       
-      console.log(`Found ${taskThreads.length} threads with task markers (#td or #fup)`);
-      
-      // Track processed tasks to avoid duplicates
+      // Track processed tasks names within this run (if needed, less critical now)
       const processedTaskNames = new Set();
       
-      // Process each thread
-      for (const thread of taskThreads) {
+      // Process each thread found by the search
+      for (const thread of allRecentThreads) {
+        const threadId = thread.getId();
+
+        // --- Skip if already processed in this run ---
+        if (processedThreadIds.has(threadId)) {
+          continue; 
+        }
+        // -------------------------------------------
+
         const messages = thread.getMessages();
         
         // Only process the most recent message in each thread
         const message = messages[messages.length - 1];
-        const subject = message.getSubject();
-        const body = message.getPlainBody();
-        console.log('Processing email:', subject);
+        const subject = message.getSubject() || ''; // Ensure subject is a string
+        const body = message.getPlainBody() || '';   // Ensure body is a string
+        const emailUrl = `https://mail.google.com/mail/u/0/#all/${threadId}`;
+        
+        console.log(`Processing Thread ID: ${threadId}, Subject: "${subject}"`);
         
         try {
           let task;
-          // Get the thread ID for a direct link to the email
-          const threadId = thread.getId();
-          const emailUrl = `https://mail.google.com/mail/u/0/#all/${threadId}`;
-          
-          // Parse task based on format
-          if (subject.toLowerCase().includes('#fup')) {
-            task = parseFollowUpFormat(subject, emailUrl);
-          } else if (subject.toLowerCase().includes('#td')) {
-            task = parseTaskFormat(subject, emailUrl, body);
+          let isFollowUpFromBody = false;
+
+          // --- FLAG: Check if subject contains markers ---
+          const subjectHasFup = subject.toLowerCase().includes('#fup');
+          const subjectHasTd = subject.toLowerCase().includes('#td');
+          // --------------------------------------------
+
+          // --- CHECK 1: Subject Markers ---
+          if (subjectHasFup || subjectHasTd) {
+             console.log('Marker found in subject.');
+             if (subjectHasFup) {
+               task = parseFollowUpFormat(subject, emailUrl);
+             } else { // subjectHasTd
+               task = parseTaskFormat(subject, emailUrl, body);
+             }
+          } 
+          // --- CHECK 2: Body Marker (if no subject marker) ---
+          else { 
+             const firstLine = body.split('\\n')[0].trim();
+             if (firstLine.toLowerCase().startsWith('#fup')) {
+               console.log('Marker #fup found on first line of body.');
+               isFollowUpFromBody = true;
+               // Use subject for task name, treat as follow-up
+               task = parseFollowUpFormat(subject, emailUrl); 
+               // Ensure priority is correctly set for body-triggered follow-ups
+               task.priority = 'Follow-up'; 
+               task.notes = `Email Link: ${emailUrl}\\n(Detected #fup in body)`; // Add note about detection method
+             }
           }
-          
+          // --- END CHECKS ---
+
           if (task) {
-            // Check if we've already processed a task with this name
+            // --- DEDUPLICATION Check (optional but good practice) ---
             if (processedTaskNames.has(task.name)) {
-              console.log(`Skipping duplicate task: ${task.name}`);
-              
-              // Still mark as processed to avoid future processing
+              console.log(`Skipping duplicate task name in this run: ${task.name}`);
+              // Mark as processed to avoid reprocessing later, even if skipped
               message.markRead();
               ensureLabelExists('Task-Processed');
               thread.addLabel(GmailApp.getUserLabelByName('Task-Processed'));
-              
+              processedThreadIds.add(threadId); // Mark thread processed
               continue;
             }
-            
-            // Add to processed set
             processedTaskNames.add(task.name);
+            // -------------------------------------------------------
             
             console.log('Successfully parsed task:', JSON.stringify(task));
             
             // Add task to sheet using the existing SheetManager
-            const addedTask = sheetManager.addTask(task);
+            const addedTask = sheetManager.addTask(task); // Pass the whole task object
             console.log('Task added to sheet:', JSON.stringify(addedTask));
             
             // --- Add the row number to the task object ---
             if (addedTask && addedTask.success && addedTask.row) {
               task.row = addedTask.row;
-              console.log(`Added row number ${task.row} to task object for scheduling`);
+              console.log(`Added row number ${task.row} to task object for scheduling/updates`);
             } else {
               console.warn('Could not get row number when adding task, status update might fail.');
+              // Maybe skip further processing for this task if row is critical?
             }
             // ----------------------------------------------
             
-            // Process the task immediately if auto-scheduling is enabled and it's not a follow-up
             const autoSchedule = PropertiesService.getScriptProperties().getProperty('emailTaskAutoSchedule');
-            let schedulingResult = null; // Initialize result
-            let mailSent = false; // Flag to prevent double emails
+            let schedulingResult = null; 
+            let mailSent = false;
             
-            // --- Check if it's a Follow-up OR if Auto-Schedule is off ---
-            if (task.priority === 'Follow-up') {
-              // Create a mock result for Follow-ups to trigger correct email
-              schedulingResult = {
+            // --- Determine if it's a Follow-up (from subject OR body) ---
+            const isFollowUp = task.priority === 'Follow-up' || isFollowUpFromBody;
+            // -----------------------------------------------------------
+
+            if (isFollowUp) {
+              // --- Handle Follow-up (Update Status & Send Email) ---
+              schedulingResult = { // Mock result for email
                 success: true,
-                message: 'Task skipped - Follow-up from email processing',
+                message: `Task skipped - Follow-up from email processing${isFollowUpFromBody ? ' (body trigger)' : ''}`,
                 events: []
               };
-              console.log('EMAIL PROCESSING: Created mock scheduling result for follow-up task.');
-              // Send confirmation immediately for Follow-ups
+              console.log('EMAIL PROCESSING: Handling Follow-up task.');
+              
+              if (task.row) { 
+                sheetManager.updateTaskStatus(task.row, 'Follow-up');
+                console.log(`Updated status to Follow-up for task in row ${task.row}`);
+              } else {
+                console.error(`Could not update status to Follow-up, missing row number for task: ${task.name}`);
+              }
+              
               sendTaskCreationConfirmation(task, userEmail, schedulingResult);
               mailSent = true;
-            } 
-            // --- If Auto-Schedule is ON and it's NOT a Follow-up, try scheduling ---
-            else if (autoSchedule === 'true') { 
+              // ------------------------------------------------------
+            } else if (autoSchedule === 'true') { 
+              // --- Handle Auto-Scheduling for NON-Follow-up ---
               console.log('Auto-scheduling task');
               console.log(`AUTO-SCHEDULE: Starting for task "${task.name}" at row ${task.row}`);
               
@@ -153,8 +193,14 @@ function processEmailTasks() {
                 const beforeRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
                 console.log(`AUTO-SCHEDULE: Before processTask, spreadsheet has ${beforeRowCount} rows`);
                 
-                schedulingResult = taskManager.processTask(task, task.name);
-                
+                // Ensure task object has row number before passing
+                if (!task.row) {
+                   console.error("AUTO-SCHEDULE: Cannot processTask, missing row number.");
+                   schedulingResult = {success: false, message: "Scheduling failed: Missing task row number."};
+                } else {
+                   schedulingResult = taskManager.processTask(task); // Pass the full task object
+                }
+                                
                 const afterRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
                 console.log(`AUTO-SCHEDULE: After processTask, spreadsheet has ${afterRowCount} rows (change: ${afterRowCount - beforeRowCount})`);
                 
@@ -169,48 +215,64 @@ function processEmailTasks() {
                 sendTaskCreationConfirmation(task, userEmail, { success: false, message: 'Task created, auto-scheduling skipped (no calendar access)' });
                 mailSent = true;
               }
+              // --------------------------------------------------
             }
             
-            // Send basic confirmation ONLY if not a Follow-up AND auto-schedule is OFF AND mail hasn't been sent
-            if (task.priority !== 'Follow-up' && autoSchedule !== 'true' && !mailSent) {
+            // --- Basic Confirmation (Auto-schedule OFF, not Follow-up) ---
+            if (!isFollowUp && autoSchedule !== 'true' && !mailSent) {
                 console.log('EMAIL PROCESSING: Sending basic Task Created confirmation (Auto-schedule OFF).');
                 sendTaskCreationConfirmation(task, userEmail, { success: true, message: 'Task created, auto-scheduling is off.' }); 
+                mailSent = true; // Mark mail sent
             }
-            // --- End Updated Confirmation Logic ---
+            // -----------------------------------------------------------
             
-            // Mark as read and add processed label
+            // --- Mark Processed ---
             message.markRead();
             ensureLabelExists('Task-Processed');
             thread.addLabel(GmailApp.getUserLabelByName('Task-Processed'));
-            
-            // Archive if not already archived
-            if (!thread.isInInbox()) {
-              console.log('Thread already archived, skipping archive step');
-            } else {
+            processedThreadIds.add(threadId); // Add thread ID to processed set
+            // ----------------------
+
+            // --- Archive ---
+            if (thread.isInInbox()) {
               thread.moveToArchive();
+            } else {
+              console.log('Thread already archived, skipping archive step');
             }
+            // ---------------
+          } else {
+             // If no task could be parsed (no markers in subject or body)
+             console.log(`No task markers found for thread ID ${threadId}. Skipping.`);
           }
         } catch (error) {
-          console.error('Error processing email:', error.message);
+          console.error(`Error processing thread ID ${threadId}:`, error.message, error.stack);
           
-          // Send error notification with example formats
+          // Send error notification 
           sendErrorNotification(subject, error.message, userEmail);
           
-          // Mark as read and add error-processed label to prevent reprocessing
-          message.markRead();
-          ensureLabelExists('Task-Error-Processed');
-          thread.addLabel(GmailApp.getUserLabelByName('Task-Error-Processed'));
-          
-          // Don't archive error emails so user can see them
+          // Mark as error-processed
+          try {
+             message.markRead();
+             ensureLabelExists('Task-Error-Processed');
+             thread.addLabel(GmailApp.getUserLabelByName('Task-Error-Processed'));
+             processedThreadIds.add(threadId); // Also mark errors as processed
+          } catch (labelError) {
+             console.error(`Failed to apply error label to thread ${threadId}: ${labelError}`);
+          }
         }
-      }
+      } // End for loop processing threads
     } catch (error) {
-      console.error('Error processing emails:', error);
+      // Catch errors in the main processing block (e.g., getting sheet data)
+      console.error('Error during email processing setup or loop:', error);
     }
     
     // Check spreadsheet state at end
-    const endRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
-    console.log(`PROCESS END: Spreadsheet has ${endRowCount} rows at end (change: ${endRowCount - startRowCount})`);
+    try {
+      const endRowCount = SpreadsheetApp.getActive().getSheetByName('Tasks').getLastRow();
+      console.log(`PROCESS END: Spreadsheet has ${endRowCount} rows at end (change: ${endRowCount - startRowCount})`);
+    } catch (e) {
+      console.error("Error getting end row count: " + e);
+    }
     console.log('============ EMAIL TASK PROCESSING COMPLETE ============');
   } finally {
     // ALWAYS release the lock

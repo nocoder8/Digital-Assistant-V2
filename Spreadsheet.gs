@@ -243,6 +243,7 @@ class SheetManager {
       
       // Update the status
       sheet.getRange(row, statusColIndex + 1).setValue(status);
+      SpreadsheetApp.flush();
       console.log(`Successfully updated status at row ${row}, column ${statusColIndex + 1} to "${status}"`);
       
       return true;
@@ -481,6 +482,68 @@ class SheetManager {
         message: error.message,
         count: 0
       };
+    }
+  }
+
+  /**
+   * Deletes a specific row from the Tasks sheet.
+   * @param {number} row - The 1-indexed row number to delete.
+   * @returns {boolean} True if successful, false otherwise.
+   */
+  deleteRow(row) {
+    try {
+      const sheet = this.getTasksSheet();
+      // Basic validation
+      if (row <= 1 || row > sheet.getLastRow()) {
+          console.error(`deleteRow: Invalid row number ${row}`);
+          return false;
+      }
+      console.log(`Attempting to delete row ${row}`);
+      sheet.deleteRow(row);
+      console.log(`Successfully deleted row ${row}`);
+      return true;
+    } catch (error) {
+      console.error(`Error deleting row ${row}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Updates both the Priority and Status for a given task row.
+   * @param {number} row - The 1-indexed row number.
+   * @param {string} priority - The new priority value.
+   * @param {string} status - The new status value.
+   * @returns {boolean} True if successful, false otherwise.
+   */
+  updateTaskPriorityAndStatus(row, priority, status) {
+    try {
+      console.log(`Updating row ${row} to Priority="${priority}", Status="${status}"`);
+      const sheet = this.getTasksSheet();
+      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      
+      const priorityColIndex = headers.findIndex(header => String(header).toLowerCase() === 'priority');
+      const statusColIndex = headers.findIndex(header => String(header).toLowerCase() === 'status');
+
+      if (priorityColIndex < 0 || statusColIndex < 0) {
+          console.error('updateTaskPriorityAndStatus: Priority or Status column not found.');
+          return false;
+      }
+
+      // Ensure row is valid
+      if (row <= 1 || row > sheet.getLastRow()) {
+          console.error(`updateTaskPriorityAndStatus: Invalid row number ${row}`);
+          return false;
+      }
+
+      // Update both values. Consider batch update if performance becomes an issue later.
+      sheet.getRange(row, priorityColIndex + 1).setValue(priority);
+      sheet.getRange(row, statusColIndex + 1).setValue(status);
+      console.log(`Successfully updated Priority and Status for row ${row}`);
+      return true;
+
+    } catch (error) {
+      console.error(`Error updating priority and status for row ${row}:`, error);
+      return false;
     }
   }
 }

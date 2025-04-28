@@ -68,6 +68,7 @@ function onOpen(e) {
     .addSeparator()
     .addItem('📧 Process Emails Now', 'runEmailTaskProcessingNow')
     .addItem('📧 Process Specific Email', 'promptForEmailSubject')
+    .addItem('📧 Send Daily Digest Now', 'sendDailyTaskDigest')
     .addToUi();
 }
 
@@ -136,13 +137,32 @@ function startRescheduling() {
       oneMonthFromNow.setMonth(oneMonthFromNow.getMonth() + 1);
       
       const events = calendar.getEvents(now, oneMonthFromNow);
+      console.log(`-> Found ${events.length} potentially overlapping events to check.`);
+
       events.forEach(event => {
-        const desc = event.getDescription();
-        const title = event.getTitle(); 
-        // Check ONLY if title starts with 'Auto-Scheduled:'
-        if (title && title.startsWith('Auto-Scheduled:')) {
-          console.log(`Deleting event: "${title}" (Matched title prefix)`);
-          event.deleteEvent();
+        const eventStartTime = event.getStartTime(); // Get start time
+        const eventEndTime = event.getEndTime();
+        const eventTitle = event.getTitle();
+        const eventId = event.getId();
+
+        // --- Add Detailed Time Logging ---
+        console.log(`--> Checking Event: "${eventTitle}"`);
+        console.log(`    Event Start: ${eventStartTime.toISOString()} | Event End: ${eventEndTime.toISOString()}`);
+        console.log(`    Check Window Start: ${now.toISOString()} | Check Window End (Now): ${now.toISOString()}`);
+        // --- End Detailed Time Logging ---
+
+        // Filter 1: Check if event ENDED within our time window (End is AFTER start check AND End is BEFORE or AT now)
+        if (eventEndTime >= now && eventEndTime <= now) {
+          // Filter 2: Check if it's one of our auto-scheduled events
+          if (eventTitle && eventTitle.startsWith('Auto-Scheduled:')) {
+            console.log(`  -> Event ENDED within check window and is Auto-Scheduled.`); // Log success
+            // Filter 3: Check if we've already sent an email for this event
+            const emailSentKey = `completionCheckSent_${eventId}`;
+            if (!PropertiesService.getScriptProperties().getProperty(emailSentKey)) {
+              console.log(`  -> Event "${eventTitle}" is Auto-Scheduled and not yet sent.`);
+              event.deleteEvent();
+            }
+          }
         }
       });
       
@@ -820,4 +840,274 @@ function processSpecificEmail(subject) {
      console.error('Error processing specific email:', error);
      showStatus('Error processing email: ' + error.message);
   }
+}
+
+// ----------- WEB APP FUNCTIONS -----------
+
+/**
+ * Handles GET requests for the Web App.
+ * This is triggered when a user clicks a link in the completion check email.
+ * @param {Event} e - The event object containing request parameters.
+ * @returns {HtmlOutput} An HTML page confirming the action.
+ */
+function doGet(e) {
+  console.log('Web App doGet triggered.');
+  console.log('Request Parameters:', JSON.stringify(e.parameter));
+
+  const action = e.parameter.action;
+  const rowStr = e.parameter.row;
+  const user = Session.getActiveUser().getEmail();
+  const scriptUser = PropertiesService.getScriptProperties().getProperty('userEmail');
+
+  // --- Security Check: Ensure the person clicking is the script owner --- 
+  if (!scriptUser || user !== scriptUser) {
+    console.error('Web App Security Alert: Request received from unauthorized user:', user);
+    return HtmlService.createHtmlOutput("<html><body><h1>Error</h1><p>You are not authorized to perform this action.</p></body></html>");
+  }
+  // --- End Security Check ---
+
+  let message = 'Invalid request.'; // Default message
+  let success = false;
+
+  if (!action || !rowStr) {
+    console.error('Web App Error: Missing action or row parameter.');
+    message = 'Error: Missing required information in the request.';
+  } else {
+    const row = parseInt(rowStr, 10);
+    if (isNaN(row)) {
+      console.error('Web App Error: Invalid row number:', rowStr);
+      message = 'Error: Invalid task identifier.';
+    } else {
+      console.log(`Web App Processing: Action='${action}', Row=${row}`);
+      // --- Perform Action based on parameter --- 
+      try {
+        // Use a lock to prevent conflicts if multiple clicks happen quickly
+        const lock = LockService.getScriptLock();
+        if (lock.tryLock(5000)) { // Wait 5 seconds
+          let taskName = '(Unknown Task)'; // Placeholder
+          try {
+             // Attempt to get task name for better messages (optional)
+             const task = sheetManager.getTaskByRow(row);
+             if (task) taskName = task.name;
+          } catch (getNameError) { /* ignore error getting name */ }
+          
+          if (action === 'done') {
+            success = sheetManager.deleteRow(row);
+            if (success) message = `Task '${taskName}' (Row ${row}) marked as completed and removed.`;
+            else message = `Failed to remove task '${taskName}' (Row ${row}). Check logs.`;
+          } else if (action === 'reschedule') {
+            success = sheetManager.updateTaskStatus(row, 'Pending');
+            if (success) message = `Task '${taskName}' (Row ${row}) status set to Pending for rescheduling.`;
+            else message = `Failed to update status for task '${taskName}' (Row ${row}). Check logs.`;
+          } else if (action === 'asap') {
+            success = sheetManager.updateTaskPriorityAndStatus(row, 'P1', 'Pending');
+            if (success) message = `Task '${taskName}' (Row ${row}) status set to Pending and priority to P1 for ASAP rescheduling.`;
+            else message = `Failed to update status/priority for task '${taskName}' (Row ${row}). Check logs.`;
+          } else {
+            message = `Error: Unknown action '${action}'.`;
+          }
+          lock.releaseLock();
+        } else {
+          message = 'Server busy, please try clicking the link again in a moment.';
+          console.warn('Web App could not acquire lock.');
+        }
+      } catch (err) {
+        console.error('Web App Error performing action:', err);
+        message = 'An error occurred while processing your request. Please check the script logs.';
+      }
+      // --- End Action Logic --- 
+    }
+  }
+  
+  console.log('Web App Response Message:', message);
+  // Return a simple HTML page to the user
+  return HtmlService.createHtmlOutput(`<html><body style="font-family: sans-serif;"><h1>Digital Assistant Task Update</h1><p>${message}</p></body></html>`) 
+    .setTitle('Task Update Confirmation');
+}
+
+function checkCompletedEvents() {
+  console.log('Running Completion Check...');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) { // Wait 30 seconds
+    console.log('Completion Check skipped, lock not acquired.');
+    return;
+  }
+
+  let webAppUrl = null;
+  try {
+    // --- Get Web App URL ---
+    webAppUrl = ScriptApp.getService().getUrl();
+    if (!webAppUrl) {
+        console.error('Completion Check Error: Web App URL not available. Script must be deployed as a Web App.');
+        lock.releaseLock(); // Release lock before returning
+        return;
+    }
+    console.log('Web App URL:', webAppUrl);
+    // --- End Get Web App URL ---
+
+    const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
+    if (!userEmail) {
+      console.error('Completion Check Error: User email not set.');
+      lock.releaseLock();
+      return;
+    }
+
+    const calendar = CalendarApp.getDefaultCalendar();
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const lastCheckTimestamp = scriptProperties.getProperty('lastCompletionCheckTimestamp');
+    const now = new Date();
+    const checkStartTime = lastCheckTimestamp ? new Date(parseInt(lastCheckTimestamp)) : new Date(now.getTime() - 60 * 60 * 1000); // Default to 1 hour ago if no previous check
+    
+    const maxLookbackMillis = 2 * 24 * 60 * 60 * 1000; // 2 days max lookback
+    if (now.getTime() - checkStartTime.getTime() > maxLookbackMillis) {
+        console.log(`Completion Check: Last check was too long ago (${checkStartTime.toISOString()}). Resetting check window to 1 hour ago.`);
+        checkStartTime.setTime(now.getTime() - 60 * 60 * 1000);
+    }
+
+    console.log(`Completion Check: Searching for events ending between ${checkStartTime.toISOString()} and ${now.toISOString()}`);
+
+    // Find potentially overlapping events
+    const events = calendar.getEvents(checkStartTime, now); 
+    let checkedCount = 0;
+    console.log(`-> Found ${events.length} potentially overlapping events to check.`);
+
+    events.forEach(event => {
+      const eventStartTime = event.getStartTime(); // Get start time
+      const eventEndTime = event.getEndTime();
+      const eventTitle = event.getTitle();
+      const eventId = event.getId();
+
+      // --- Add Detailed Time Logging ---
+      console.log(`--> Checking Event: "${eventTitle}"`);
+      console.log(`    Event Start: ${eventStartTime.toISOString()} | Event End: ${eventEndTime.toISOString()}`);
+      console.log(`    Check Window Start: ${checkStartTime.toISOString()} | Check Window End (Now): ${now.toISOString()}`);
+      // --- End Detailed Time Logging ---
+
+      // Filter 1: Check if event ENDED within our time window 
+      if (eventEndTime >= checkStartTime && eventEndTime <= now) {
+        console.log(`  -> Event "${eventTitle}" ENDED within check window.`); // Log filter 1 pass
+        // Filter 2: Check if it's one of our auto-scheduled events
+        if (eventTitle && eventTitle.startsWith('Auto-Scheduled:')) {
+          console.log(`  -> Event is Auto-Scheduled.`); // Log filter 2 pass
+          
+          // Filter 3: Check if we've already sent an email for this event
+          const emailSentKey = `completionCheckSent_${eventId}`;
+          if (scriptProperties.getProperty(emailSentKey)) {
+            console.log(`   -> Email already sent for event ID: ${eventId}. Skipping.`);
+            return; // Skip this event
+          }
+
+          // Extract task row from description
+          const desc = event.getDescription();
+          const rowMatch = desc ? desc.match(/Source Task Row: (\d+)/) : null;
+          if (!rowMatch || !rowMatch[1]) {
+            console.warn(`   -> Could not extract row number from description for event: "${eventTitle}". Skipping.`);
+            return; // Skip if no row number
+          }
+          const taskRow = parseInt(rowMatch[1], 10);
+
+          // Get task status from sheet
+          const taskStatus = sheetManager.getTaskStatusDirectly(taskRow);
+          console.log(`   -> Task Row: ${taskRow}, Current Status in Sheet: "${taskStatus}"`);
+
+          // Filter 4: Check if task status is still 'Scheduled'
+          if (taskStatus === 'Scheduled') {
+             console.log(`   -> Task status is 'Scheduled'. Proceeding to send email.`);
+            const taskName = eventTitle.substring('Auto-Scheduled: '.length);
+            const subject = `Task Completion Check: ${taskName} (Row ${taskRow})`; // Include row in subject
+
+            // --- Construct Web App Links --- 
+            const doneUrl = `${webAppUrl}?action=done&row=${taskRow}`;
+            const rescheduleUrl = `${webAppUrl}?action=reschedule&row=${taskRow}`;
+            const asapUrl = `${webAppUrl}?action=asap&row=${taskRow}`;
+            // --- End Construct Links ---
+
+            // --- Create HTML Body --- 
+            const htmlBody = `
+              <html>
+                <body style="font-family: sans-serif;">
+                  <p>Did you complete the task "<b>${taskName}</b>"?</p>
+                  <p>
+                    <a href="${doneUrl}" style="background-color: #4CAF50; color: white; padding: 10px 15px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; margin-right: 10px;">Completed</a> 
+                    <a href="${rescheduleUrl}" style="background-color: #ffcc00; color: black; padding: 10px 15px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; margin-right: 10px;">No, Reschedule</a> 
+                    <a href="${asapUrl}" style="background-color: #f44336; color: white; padding: 10px 15px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px;">No, Reschedule ASAP</a>
+                  </p>
+                  <hr>
+                  <p style="font-size: smaller; color: grey;">
+                    Task Details:<br>
+                    Priority: ${desc ? (desc.match(/Priority: (.*)/) || [,''])[1] : 'N/A'}<br>
+                    Time Block: ${desc ? (desc.match(/Time Block: (.*) minutes/) || [,''])[1] : 'N/A'} minutes<br>
+                    Notes: ${desc ? (desc.match(/Notes: (.*)/) || [,''])[1] : 'N/A'}<br> 
+                    (Row: ${taskRow}, Event ID: ${eventId})
+                  </p>
+                </body>
+              </html>`;
+            // --- End HTML Body --- 
+
+            try {
+              // Send HTML email
+              MailApp.sendEmail({
+                  to: userEmail, 
+                  subject: subject, 
+                  htmlBody: htmlBody // Use htmlBody instead of body
+              });
+              console.log(`    -> SENT completion check email for task "${taskName}" (Row ${taskRow})`);
+              // Mark email as sent for this event ID
+              scriptProperties.setProperty(emailSentKey, 'true'); 
+              checkedCount++;
+            } catch (e) {
+              console.error(`   -> FAILED to send completion check email for task "${taskName}": ${e}`);
+            }
+          } else {
+            console.log(`   -> Task status is "${taskStatus}", not "Scheduled". Skipping email.`);
+          }
+        } else {
+            console.log(`  -> Event is not Auto-Scheduled. Skipping.`);
+        }
+      } else {
+          console.log(`  -> Event "${eventTitle}" did NOT end within check window. Skipping.`);
+      }
+    }); // End forEach event
+
+    // Update the timestamp for the next check
+    scriptProperties.setProperty('lastCompletionCheckTimestamp', now.getTime().toString());
+    console.log(`Completion Check finished. Sent ${checkedCount} emails. Updated last check timestamp.`);
+
+  } catch (error) {
+    console.error('Error during Completion Check:', error);
+  } finally {
+    // Ensure lock is released even if webAppUrl failed early
+    if (lock && lock.hasLock()) {
+        lock.releaseLock();
+    }
+  }
+}
+
+function specificallyFindEvent() {
+  const eventTitleToFind = "Auto-Scheduled: AI Interviews - More rounds"; // Make sure this title is EXACTLY correct
+  // Define a specific window around 5:45 PM IST (12:15 Z)
+  const searchStart = new Date("2025-04-27T12:10:00Z"); // 5:40 PM IST
+  const searchEnd = new Date("2025-04-27T12:20:00Z");   // 5:50 PM IST
+
+  const calendar = CalendarApp.getDefaultCalendar();
+  // Note: getEvents finds overlapping events, so we still filter by end time
+  const events = calendar.getEvents(searchStart, searchEnd);
+  Logger.log(`Specific Find: Found ${events.length} events overlapping ${searchStart.toISOString()} and ${searchEnd.toISOString()}`);
+
+  let foundIt = false;
+  events.forEach(event => {
+    const eventEndStr = event.getEndTime().toISOString();
+    const targetEndStr = "2025-04-27T12:15:00.000Z"; // Check this exact UTC time for 5:45 PM IST
+    Logger.log(`--> Specific Find Checking: "${event.getTitle()}" | End: ${eventEndStr}`);
+    // Use startsWith for title matching in case of slight variations, but exact match for time
+    if (event.getTitle().startsWith(eventTitleToFind) && eventEndStr === targetEndStr) {
+      Logger.log(`==> Specific Find MATCH FOUND: Event ID: ${event.getId()}`);
+      foundIt = true;
+    }
+  });
+
+  if (!foundIt) {
+    Logger.log(`==> Specific Find: Did not find event "${eventTitleToFind}" ending exactly at ${targetEndStr} within the search window.`);
+  }
+  SpreadsheetApp.getUi().alert('Check Logs for specific event find results.');
 }

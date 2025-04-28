@@ -842,6 +842,166 @@ function processSpecificEmail(subject) {
   }
 }
 
+// ----------- FOLLOW-UP LABEL PROCESSING ----------- 
+
+/**
+ * Processes emails labeled 'Process-Follow-Up' to create follow-up tasks.
+ * Designed to run less frequently (e.g., every 6 hours).
+ */
+function processFollowUpLabels() {
+  const lock = LockService.getScriptLock();
+  // Wait up to 5 minutes for the lock
+  if (!lock.tryLock(300000)) {
+    console.log('Could not obtain lock for processFollowUpLabels - another instance may be running. Skipping.');
+    return; 
+  }
+
+  const FOLLOW_UP_LABEL_NAME = 'Process-Follow-Up';
+  const PROCESSED_LABEL_NAME = 'Task-Processed'; // Use the same processed label
+  const MAX_THREADS_PER_RUN = 100; // Limit how many to process at once
+
+  let processedCount = 0;
+  let errorCount = 0;
+
+  try {
+    console.log(`====== STARTING Follow-Up Label Processing (${new Date().toLocaleString()}) ======`);
+    
+    // Ensure labels exist
+    const followUpLabel = ensureLabelExists(FOLLOW_UP_LABEL_NAME);
+    const processedLabel = ensureLabelExists(PROCESSED_LABEL_NAME);
+
+    if (!followUpLabel) {
+        console.error(`Critical Error: Could not find or create the label "${FOLLOW_UP_LABEL_NAME}". Aborting.`);
+        return; // Cannot proceed without the label
+    }
+     if (!processedLabel) {
+        console.error(`Critical Error: Could not find or create the label "${PROCESSED_LABEL_NAME}". Aborting.`);
+        return; // Need the processed label too
+    }
+
+    // Search for threads with the follow-up label
+    const threads = GmailApp.search(`label:${FOLLOW_UP_LABEL_NAME}`, 0, MAX_THREADS_PER_RUN);
+    console.log(`Found ${threads.length} threads with label "${FOLLOW_UP_LABEL_NAME}".`);
+
+    for (const thread of threads) {
+      const threadId = thread.getId();
+      console.log(`Processing Thread ID: ${threadId}`);
+
+      try {
+        const messages = thread.getMessages();
+        if (!messages || messages.length === 0) {
+          console.log(`Skipping thread ${threadId} - No messages found.`);
+          // Remove label even if empty to avoid reprocessing
+          thread.removeLabel(followUpLabel);
+          continue;
+        }
+
+        // Use the first message for subject/details
+        const message = messages[0]; 
+        const subject = message.getSubject() || 'No Subject';
+        const emailUrl = thread.getPermalink(); // Get permalink for the thread
+
+        // Clean up task name
+        let taskName = subject.replace(/^(Fwd|Re|FWD|RE):\s*/i, '').trim();
+        taskName = `Follow up: ${taskName}`; // Prepend "Follow up:"
+
+        console.log(` -> Task Name: "${taskName}"`);
+
+        // Create task object
+        const task = {
+          name: taskName,
+          priority: 'Follow-up', // Explicitly set priority
+          timeBlock: 15,         // Default time for follow-ups (adjust if needed)
+          notes: `Email Link: ${emailUrl}`,
+          status: 'Follow-up'     // Set status directly to Follow-up
+        };
+
+        // Add task to sheet
+        const addedRow = sheetManager.addTask(task);
+
+        if (addedRow) {
+          console.log(` -> Added task "${task.name}" to sheet row ${addedRow}. Status: Follow-up.`);
+          processedCount++;
+          
+          // --- Post-processing ---
+          // Remove the follow-up label
+          thread.removeLabel(followUpLabel);
+          // Add the standard processed label
+          thread.addLabel(processedLabel);
+          // Optionally archive
+          if (thread.isInInbox()) {
+            thread.moveToArchive();
+            console.log(` -> Archived thread ${threadId}.`);
+          }
+          // ----------------------
+
+        } else {
+          console.error(` -> Failed to add task "${task.name}" (from thread ${threadId}) to sheet.`);
+          errorCount++;
+          // Consider adding an error label or leaving the Process-Follow-Up label for manual review
+        }
+
+      } catch (taskError) {
+        console.error(` -> Error processing thread ${threadId}: ${taskError}`, taskError.stack);
+        errorCount++;
+        // Consider adding an error label or leaving the Process-Follow-Up label
+      }
+    } // End for loop
+
+  } catch (error) {
+    console.error('General Error during follow-up label processing:', error);
+    errorCount++; // Count general errors too
+  } finally {
+    lock.releaseLock();
+    console.log(`====== FINISHED Follow-Up Label Processing. Processed: ${processedCount}, Errors: ${errorCount}. Lock released. ======`);
+  }
+}
+
+/**
+ * Ensure a Gmail label exists. Returns the label object.
+ * @param {string} labelName - Name of the label
+ * @returns {GmailLabel|null} The GmailLabel object or null if creation failed.
+ */
+function ensureLabelExists(labelName) {
+  console.log(`ENSURE_LABEL: Attempting to find label: "${labelName}"`);
+  let label = null; // Initialize to null
+  try {
+      label = GmailApp.getUserLabelByName(labelName);
+  } catch (e) {
+      console.error(`ENSURE_LABEL: Error calling getUserLabelByName for "${labelName}": ${e}`);
+      label = null; // Ensure label is null on error
+  }
+  
+  console.log(`ENSURE_LABEL: Result of getUserLabelByName: ${label ? 'Found' : 'Not Found'}`);
+  
+  if (!label) {
+    console.log(`ENSURE_LABEL: Label "${labelName}" not found, attempting to create.`);
+    try {
+      label = GmailApp.createLabel(labelName);
+      console.log(`ENSURE_LABEL: Successfully created label: ${labelName}`);
+    } catch (error) {
+      console.error(`ENSURE_LABEL: Error creating label "${labelName}": ${error.message}`);
+      // Check again in case of race condition or creation error
+      console.log(`ENSURE_LABEL: Checking again after creation attempt...`);
+      try {
+           label = GmailApp.getUserLabelByName(labelName);
+           console.log(`ENSURE_LABEL: Result of second getUserLabelByName: ${label ? 'Found' : 'Not Found'}`);
+      } catch (e2) {
+           console.error(`ENSURE_LABEL: Error on second getUserLabelByName for "${labelName}": ${e2}`);
+           label = null;
+      }
+      if (!label) {
+         console.error(`ENSURE_LABEL: Failed to ensure label "${labelName}" exists after creation attempt.`);
+      }
+    }
+  } else {
+    console.log(`ENSURE_LABEL: Label "${labelName}" already exists.`);
+  }
+  
+  console.log(`ENSURE_LABEL: Returning label object for "${labelName}": ${label ? 'Exists' : 'NULL'}`);
+  return label; // Return the label object or null
+}
+
 // ----------- WEB APP FUNCTIONS -----------
 
 /**

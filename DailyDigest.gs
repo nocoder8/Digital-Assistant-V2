@@ -189,9 +189,8 @@ function generateFollowUpTasksHtml(followUpTasks) {
   return `
     <table cellspacing="0" cellpadding="4" border="1" style="width:100%; border-collapse:collapse; font-size:13px; border:1px solid #ddd;">
       <tr>
-        <th width="40%" style="background-color:#f8f9fa; text-align:left; padding:5px; border:1px solid #ddd;">Task</th>
-        <th width="40%" style="background-color:#f8f9fa; text-align:left; padding:5px; border:1px solid #ddd;">Notes</th>
-        <th width="20%" style="background-color:#f8f9fa; text-align:left; padding:5px; border:1px solid #ddd;">Actions</th>
+        <th width="70%" style="background-color:#f8f9fa; text-align:left; padding:5px; border:1px solid #ddd;">Task</th>
+        <th width="30%" style="background-color:#f8f9fa; text-align:left; padding:5px; border:1px solid #ddd;">Actions</th>
       </tr>
       ${followUpTasks.map(task => {
         // Try multiple patterns to find email links
@@ -237,7 +236,6 @@ function generateFollowUpTasksHtml(followUpTasks) {
         return `
           <tr style="background-color:${task.priority === 'P1' ? '#ffebee' : task.priority === 'P2' ? '#fff8e1' : task.priority === 'P3' ? '#e8f5e9' : '#e3f2fd'};">
             <td style="padding:4px; border:1px solid #ddd; vertical-align:top; overflow:hidden; text-overflow:ellipsis;">${task.name}</td>
-            <td style="padding:4px; border:1px solid #ddd; vertical-align:top;">${cleanNotes}</td>
             <td style="padding:4px; border:1px solid #ddd; vertical-align:top; white-space:nowrap;">
               ${emailLink ? 
                 `<a href="${emailLink}" target="_blank" style="color:#3498db; text-decoration:none;">📧 Open</a><br>` : 

@@ -147,8 +147,15 @@ function processEmailTasks() {
             // --- Get subject and body ONCE INSIDE the try block ---
             const subject = message.getSubject() || '';
             const plainBody = message.getPlainBody() || ''; // Fetch body once
-            const emailUrl = `https://mail.google.com/mail/u/0/#all/${threadId}`;
-            console.log(`Subject: "${subject}"`);
+            
+            // ---> MODIFIED: Use thread.getPermalink() directly <---
+            const emailUrl = thread.getPermalink(); 
+            console.log(`DEBUG: Using thread.getPermalink() which resulted in: ${emailUrl}`);
+            console.log(`DEBUG: Original threadId was: ${threadId}`); // Log the old ID for comparison
+
+            // const emailUrl = `https://mail.google.com/mail/u/0/#all/${threadId}`; // OLD METHOD
+            // console.log(`DEBUG: Using threadId \"${threadId}\" to construct emailUrl: ${emailUrl}`); // OLD LOG
+            console.log(`Subject: \"${subject}\"`);
 
             // --- CHECK 1: Is this a reply to the daily prompt? --- // UNCOMMENTING BLOCK
             

@@ -646,35 +646,37 @@ This is an automated message from your Digital Assistant.`
              
              console.log(`P1 Conflict Check: Found 1 conflicting event: "${eventTitle}"`);
 
-             // Check if it looks like one of our auto-scheduled events
              if (eventTitle.startsWith('Auto-Scheduled: ')) {
-                const rowMatch = eventDesc.match(/Source Task Row: (\d+)/); // Escaped backslash for regex literal
+                const rowMatch = eventDesc.match(/Source Task Row: (\\d+)/); 
                 if (rowMatch && rowMatch[1]) {
                    const conflictingTaskRow = parseInt(rowMatch[1], 10);
                    console.log(`P1 Conflict Check: Conflicting event is Auto-Scheduled, corresponds to row ${conflictingTaskRow}`);
                    
-                   // Fetch the original task details (requires sheet access)
-                   const originalTask = sheetManager.getTaskByRow(conflictingTaskRow); // Assumes getTaskByRow exists and works
+                   const originalTask = sheetManager.getTaskByRow(conflictingTaskRow); 
                    
                    if (originalTask && (originalTask.priority === 'P3')) {
-                      console.log(`P1 BUMPING P3: Conflicting task in row ${conflictingTaskRow} is P3. Bumping.`);
-                      // 1. Delete the P3 calendar event
+                      console.log(`P1 BUMPING P3: Conflicting task in row ${conflictingTaskRow} is P3. Attempting bump.`);
+                      let bumpSuccessful = false;
                       try {
                          conflictingEvent.deleteEvent();
                          console.log(`P1 BUMPING P3: Deleted calendar event for P3 task "${originalTask.name || 'Unnamed'}".`);
-                         // 2. Reset the P3 task status to Pending
                          const statusUpdated = sheetManager.updateTaskStatus(conflictingTaskRow, 'Pending');
                           if (statusUpdated) {
                             console.log(`P1 BUMPING P3: Reset status for P3 task in row ${conflictingTaskRow} to Pending.`);
-                            conflictingEvents = []; // Clear conflicts as we just resolved it
-                            bumpedP3 = true; // Mark that we bumped
+                            bumpSuccessful = true; // Mark bump as fully successful
                           } else {
-                             console.error(`P1 BUMPING P3 FAILED: Could not reset status for P3 task in row ${conflictingTaskRow}. Aborting bump.`);
-                             // Keep conflictingEvents array as is, P1 won't be scheduled here.
+                             console.error(`P1 BUMPING P3 FAILED: Could not reset status for P3 task in row ${conflictingTaskRow}.`);
                           }
                       } catch (deleteError) {
-                         console.error(`P1 BUMPING P3 FAILED: Error deleting calendar event: ${deleteError}. Aborting bump.`);
-                         // Keep conflictingEvents array as is, P1 won't be scheduled here.
+                         console.error(`P1 BUMPING P3 FAILED: Error during P3 event deletion or status update: ${deleteError}.`);
+                      }
+
+                      if (bumpSuccessful) {
+                        conflictingEvents = []; // Clear conflicts as we successfully bumped the P3
+                        bumpedP3 = true; // Mark that we bumped for logging
+                      } else {
+                        console.log('P1 BUMPING P3: Bump was not successful. P1 task will not take this slot.');
+                        // Do not clear conflictingEvents, P1 will not be scheduled here
                       }
                    } else {
                      console.log(`P1 Conflict Check: Conflicting task is not P3 (Priority: ${originalTask ? originalTask.priority : 'Unknown'}). No bump.`);
@@ -692,41 +694,75 @@ This is an automated message from your Digital Assistant.`
           if (conflictingEvents.length === 0) {
             console.log(`Found available slot: ${slotStart.toLocaleString()} - ${slotEnd.toLocaleString()}${bumpedP3 ? ' (after bumping P3)' : ''}`);
             
-            // Create the calendar event
-            const event = calendar.createEvent(
-              `Auto-Scheduled: ${task.name || fallbackTaskName || 'Unnamed Task'}`,
-              slotStart, // Use the actual slot start time found
-              slotEnd,   // Use the actual slot end time found
-              {
-                // --- ADD ROW INFO TO DESCRIPTION ---
-                description: `Priority: ${taskPriority}\nTime Block: ${duration} minutes\nSource Task Row: ${task.row}\n\nAuto-scheduled by Digital Assistant.`, // Escaped newlines
-                transparency: CalendarApp.EventTransparency.TRANSPARENT 
-              }
-            );
+            let eventSuccessfullyCreated = false;
+            let createdEventDetails = null;
+            try {
+                const event = calendar.createEvent(
+                  `Auto-Scheduled: ${task.name || fallbackTaskName || 'Unnamed Task'}`,
+                  slotStart,
+                  slotEnd, 
+                  {
+                    description: `Priority: ${taskPriority}\nTime Block: ${duration} minutes\nSource Task Row: ${task.row}\n\nAuto-scheduled by Digital Assistant.`,
+                    transparency: CalendarApp.EventTransparency.TRANSPARENT 
+                  }
+                );
+                event.setColor(CalendarApp.EventColor.ORANGE);
+                eventSuccessfullyCreated = true;
+                createdEventDetails = {
+                   id: event.getId(),
+                   title: event.getTitle(),
+                   start: event.getStartTime(),
+                   end: event.getEndTime()
+                };
+                console.log(`Successfully created calendar event for "${task.name || 'Unnamed Task'}".`);
+            } catch (calError) {
+                console.error(`Error creating calendar event for "${task.name || 'Unnamed Task'}": ${calError}`);
+            }
             
-            event.setColor(CalendarApp.EventColor.ORANGE);
-            
-            // Update task status in sheet
-            sheetManager.updateTaskStatus(task.row, 'Scheduled');
+            if (eventSuccessfullyCreated) {
+                // Update task status in sheet only after successful event creation
+                const statusUpdated = sheetManager.updateTaskStatus(task.row, 'Scheduled');
+                if (statusUpdated) {
+                    console.log(`Updated status to Scheduled for task in row ${task.row}`);
+                    // Update scheduled time column in sheet
+                    updateTaskScheduledTime(task, createdEventDetails.start); 
+                } else {
+                    console.error(`Failed to update status to Scheduled for task in row ${task.row}. Calendar event was created but sheet status is not updated.`);
+                    // Consider deleting the created calendar event here if sheet update is critical
+                    // For now, we'll leave it and log the inconsistency.
+                }
 
-            // Update scheduled time column in sheet
-            updateTaskScheduledTime(task, event.getStartTime()); 
-
-            foundSlotInThisDay = true; // Mark that we found a slot today
-            
-            // Prepare result object for confirmation email etc.
-             const resultEvent = {
-               id: event.getId(),
-               title: event.getTitle(),
-               start: event.getStartTime(),
-               end: event.getEndTime()
-             };
-
-            return {
-              success: true,
-              message: 'Task scheduled successfully',
-              events: [resultEvent] // Return event details in an array
-            };
+                foundSlotInThisDay = true; // Mark that we found a slot today
+                
+                // ----> ADD CALL TO sendTaskCreationConfirmation <----
+                const userEmail = PropertiesService.getScriptProperties().getProperty('userEmail');
+                if (userEmail) {
+                  const schedulingResultConfirm = {
+                    success: true,
+                    message: 'Task scheduled successfully',
+                    events: [createdEventDetails] // createdEventDetails should have start, end, title etc.
+                  };
+                  try {
+                    // Assuming sendTaskCreationConfirmation is globally available from Config.gs
+                    sendTaskCreationConfirmation(task, userEmail, schedulingResultConfirm);
+                  } catch (emailError) {
+                    console.error(`Error sending confirmation email via sendTaskCreationConfirmation for task ${task.name}: ${emailError}`);
+                  }
+                } else {
+                  console.warn('User email not found in script properties. Cannot send confirmation email.');
+                }
+                // ----> END ADDED CALL <----
+                
+                return {
+                  success: true,
+                  message: 'Task scheduled successfully',
+                  events: [createdEventDetails]
+                };
+            } else {
+                // If calendar event creation failed, don't attempt to update sheet
+                console.log('Calendar event creation failed, task status not updated to Scheduled.');
+                // The task remains Pending and will be retried later.
+            }
           } else {
              // Log remaining conflicting events for debugging if bump didn't happen or failed
              if (!bumpedP3) {
@@ -751,6 +787,22 @@ This is an automated message from your Digital Assistant.`
     
     console.warn(`No available slots found within ${maxDaysToCheck} days (from target start) for "${task.name}"`);
     
+    // ----> ADD CALL TO sendTaskCreationConfirmation FOR FAILURE CASES <----
+    const userEmailFailure = PropertiesService.getScriptProperties().getProperty('userEmail');
+    if (userEmailFailure) {
+        const schedulingResultFailure = {
+            success: false,
+            message: `No available slots found for task '${task.name || 'Unnamed Task'}' within search window.`,
+            events: []
+        };
+        try {
+            sendTaskCreationConfirmation(task, userEmailFailure, schedulingResultFailure);
+        } catch (emailError) {
+            console.error(`Error sending failure confirmation email for task ${task.name}: ${emailError}`);
+        }
+    }
+    // ----> END ADDED CALL <----
+
     return {
       success: false,
       message: `No available slots found for task '${task.name}' within search window.`,
@@ -895,4 +947,36 @@ function calculateWorkingDayOffset(startDate, offsetDays, workHoursConfig) {
   }
   // Return the date of the target working day (start of the day)
   return currentDate; 
+}
+
+// ---- GLOBAL WRAPPER FUNCTIONS ----
+
+/**
+ * Global function to trigger processing of all pending tasks.
+ */
+function runProcessPendingTasks() {
+  const taskManagerInstance = new TaskManager(); // Create an instance
+  taskManagerInstance.initialize(); // Initialize it
+  taskManagerInstance.processPendingTasks(); // Call the method
+}
+
+/**
+ * Global function to trigger processing of a single task by row number (for testing).
+ * You would typically get the task object from the sheet.
+ */
+function runProcessSpecificTask(rowNumber) {
+  if (!rowNumber || typeof rowNumber !== 'number') {
+    console.error('Please provide a valid row number to process a specific task.');
+    SpreadsheetApp.getUi().alert('Please provide a valid row number.');
+    return;
+  }
+  const taskManagerInstance = new TaskManager();
+  taskManagerInstance.initialize();
+  const task = sheetManager.getTaskByRow(rowNumber); // Assumes sheetManager is globally accessible
+  if (task) {
+    console.log(`Attempting to process task from row ${rowNumber}:`, JSON.stringify(task));
+    taskManagerInstance.processTask(task);
+  } else {
+    console.error(`Could not find task at row ${rowNumber}.`);
+  }
 } 

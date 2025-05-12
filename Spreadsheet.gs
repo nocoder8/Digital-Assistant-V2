@@ -82,7 +82,7 @@ class SheetManager {
       const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Tasks');
       
       // Handle both object and individual parameters
-      let taskName, taskPriority, taskTimeBlock, taskNotes;
+      let taskName, taskPriority, taskTimeBlock, taskNotes, taskStatus;
       
       if (typeof taskNameOrObject === 'object' && taskNameOrObject !== null) {
         // If first parameter is an object, extract properties
@@ -91,8 +91,9 @@ class SheetManager {
         taskPriority = taskObj.priority || 'P2';
         taskTimeBlock = taskObj.timeBlock || 30;
         taskNotes = taskObj.notes || '';
+        taskStatus = taskObj.status || 'Pending';
         
-        console.log(`Processing task object: Name="${taskName}", Priority="${taskPriority}"`);
+        console.log(`Processing task object: Name="${taskName}", Priority="${taskPriority}", Status="${taskStatus}"`);
         
         // // --- Normalize Follow-up priority ---
         // if (String(taskPriority).toLowerCase().includes('follow')) {
@@ -183,12 +184,11 @@ class SheetManager {
         } else if (i === notesColIndex && notesColIndex !== -1) {
           rowData.push(taskNotes);
         } else if (i === statusColIndex && statusColIndex !== -1) {
-          // --- Determine initial status based on priority ---
-          // const initialStatus = (String(taskPriority).toLowerCase().includes('follow')) ? 'Follow-up' : 'Pending';
-          // console.log(`Setting initial status for "${taskName}" to: "${initialStatus}"`);
-          // rowData.push(initialStatus); // Overwrite the default 'Pending' if needed
+          // --- Use the status read from the task object ---
+          console.log(`Setting initial status for "${taskName}" to: "${taskStatus}"`);
+          rowData.push(taskStatus); // Use the status from the input object
           // --- End status determination ---
-          rowData.push('Pending'); // Always start as Pending
+          // rowData.push('Pending'); // REMOVED: Always start as Pending
         } else {
           rowData.push(''); // Empty for other columns
         }

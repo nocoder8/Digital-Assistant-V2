@@ -53,13 +53,13 @@ function processEmailTasks() {
       // console.log('Using search query:', taskEmailSearch);
 
       // --- Define search queries ---
-      // Query for standard #td/#fup tasks (last 15 mins)
-      const standardTaskSearch = `from:${userEmail} newer_than:15m -label:Task-Processed -label:Task-Error-Processed -label:DailyTaskReply-Processed (subject:"#td" OR subject:"#fup")`;
+      // Query for standard #td/#fup tasks (last 1 hour)
+      const standardTaskSearch = `from:${userEmail} newer_than:1h -label:Task-Processed -label:Task-Error-Processed -label:DailyTaskReply-Processed (subject:"#td" OR subject:"#fup")`;
       
-      // Query for replies to the daily prompt (last 15 mins)
+      // Query for replies to the daily prompt (last 1 hour)
       const dailyReplySearchSubject = "Re: What tasks will you tackle today? [Daily Task Entry]";
-      // ---> Limit to 15 mins <---
-      const dailyReplySearch = `from:${userEmail} newer_than:15m subject:(\"${dailyReplySearchSubject}\") -label:DailyTaskReply-Processed -label:Task-Processed -label:Task-Error-Processed`;
+      // ---> Limit to 1 hour <---
+      const dailyReplySearch = `from:${userEmail} newer_than:1h subject:("${dailyReplySearchSubject}") -label:DailyTaskReply-Processed -label:Task-Processed -label:Task-Error-Processed`;
       
       // ---> Corrected Logging <---
       console.log('Standard Task Query:', standardTaskSearch);
@@ -148,13 +148,13 @@ function processEmailTasks() {
             const subject = message.getSubject() || '';
             const plainBody = message.getPlainBody() || ''; // Fetch body once
             const emailUrl = `https://mail.google.com/mail/u/0/#all/${threadId}`;
-            console.log(`Subject: \"${subject}\"`);
+            console.log(`Subject: "${subject}"`);
 
-            // --- CHECK 1: Is this a reply to the daily prompt? --- // DISABLED BLOCK
-            /*
+            // --- CHECK 1: Is this a reply to the daily prompt? --- // UNCOMMENTING BLOCK
+            
             if (subject.includes(dailyReplySearchSubject)) {
                // ----> SIMPLIFIED DEBUG LOGGING <----
-               console.log(`DEBUG: Preparing to call parseAndAddDailyTasksFromReply for thread ${threadId}`);
+               console.log(`DEBUG: Preparing to call parseAndAddDailyTasksFromReply for thread ${threadId}`); // Log is a bit misleading now as it's inlined
                try {
                  // Log only basic info, avoid method calls on 'message' initially
                  console.log(`DEBUG: typeof message: ${typeof message}`);
@@ -173,7 +173,7 @@ function processEmailTasks() {
 
                // ----> Final check (keep this, but log clearly) <----
                if (!message || typeof message.getPlainBody !== 'function') {
-                   console.error(`CRITICAL CHECK FAILED (Before Call): Message object invalid for thread ${threadId}. Type: ${typeof message}, Has getPlainBody func: ${typeof message?.getPlainBody === 'function'}. Skipping.`);
+                   console.error(`CRITICAL CHECK FAILED (Before Inline Parse): Message object invalid for thread ${threadId}. Type: ${typeof message}, Has getPlainBody func: ${typeof message?.getPlainBody === 'function'}. Skipping.`);
                    // Mark as processed with error label to be safe
                    ensureLabelExists('Task-Error-Processed');
                    thread.addLabel(GmailApp.getUserLabelByName('Task-Error-Processed'));
@@ -183,47 +183,92 @@ function processEmailTasks() {
                // ----> END FINAL CHECK <----
 
                console.log(`Detected Daily Task Reply: ${threadId}. Processing inline...`);
-               const messageToParse = message; // Keep this for getId() and getPermalink() if needed below
+               const messageToParse = message; // Use the message we already validated
                let tasksAddedInline = 0;
 
                // ----> START INLINE LOGIC (from parseAndAddDailyTasksFromReply) <----
-               // Remove redundant reads below, use 'plainBody' variable fetched above
+               // Use the 'plainBody' variable fetched ONCE at the start of the outer try block
                let inlinePermalink = '';
                let inlineMessageId = '';
 
                try {
-                   // Use messageToParse for non-content methods
+                   // Directly use messageToParse here for ID/Permalink
                    inlinePermalink = messageToParse.getThread().getPermalink();
                    inlineMessageId = messageToParse.getId();
-                   console.log(`INLINE: Processing message ID: ${inlineMessageId} in thread: ${inlinePermalink}`);
+                   console.log(`INLINE: Processing message ID: ${inlineMessageId} in thread: ${inlinePermalink} using pre-fetched body.`);
 
-                   // ---> USE PRE-FETCHED BODY <---
-                   // inlineBody = messageToParse.getPlainBody(); // REMOVED - Use plainBody variable
+                   // ---> USE PRE-FETCHED BODY (plainBody) <--- 
+                   // const inlineBody = plainBody; // This is already available as 'plainBody'
 
-                   // Extract tasks using the plainBody variable
-                   const extractedTasks = extractTasksFromEmailBody(plainBody); // Assuming this function exists and takes the body string
-                   console.log(`INLINE: Extracted ${extractedTasks.length} tasks from body.`);
+                   // Now, process the plainBody (which might be empty if retrieval failed or returned null/undefined)
+                   const inlineLines = plainBody.split('\\n');
+                   const taskRegex = /^\\s*\\d+\\s*-\\s*(.+?)\\s*,\\s*(\\d+)\\s*(?:Mins|Min|Minutes|Minute)/i;
 
-                   if (extractedTasks.length > 0) {
-                       for (const task of extractedTasks) {
-                           console.log(`INLINE Parsed daily task from message ${inlineMessageId}: Name="${task.name}", Time=${task.timeBlock}`);
-                           try {
-                               const addedTask = sheetManager.addTask(task);
-                               if (addedTask && addedTask.success) {
-                                   console.log(`INLINE Added daily task "${task.name}" to sheet.`);
-                                   tasksAddedInline++;
-                               } else {
-                                   console.warn(`INLINE Failed to add daily task "${task.name}" (from message ${inlineMessageId}) to sheet.`);
+                   for (const line of inlineLines) {
+                       const trimmedLine = line.trim();
+                       if (!trimmedLine) continue;
+                       const match = trimmedLine.match(taskRegex);
+                       if (match && match[1] && match[2]) {
+                           const taskName = match[1].trim();
+                           const timeBlock = parseInt(match[2], 10);
+                           if (taskName && !isNaN(timeBlock) && timeBlock > 0) {
+                               console.log(`INLINE Parsed daily task from message ${inlineMessageId}: Name="${taskName}", Time=${timeBlock}`);
+                               try {
+                                   const task = {
+                                       name: taskName, priority: 'P1', timeBlock: timeBlock,
+                                       notes: `Added from daily email reply. Original email: ${inlinePermalink}`,
+                                       status: 'Pending'
+                                   };
+                                   const addedTask = sheetManager.addTask(task);
+                                   if (addedTask && addedTask.success) {
+                                       console.log(`INLINE Added daily task "${taskName}" to sheet.`);
+                                       tasksAddedInline++;
+                                   } else {
+                                       console.warn(`INLINE Failed to add daily task "${taskName}" (from message ${inlineMessageId}) to sheet.`);
+                                   }
+                               } catch (e) {
+                                   console.error(`INLINE Error adding daily task "${taskName}" (from message ${inlineMessageId}) to sheet: ${e}`);
                                }
-                           } catch (e) {
-                               console.error(`INLINE Error adding daily task "${task.name}" (from message ${inlineMessageId}) to sheet: ${e}`);
+                           } else {
+                               console.log(`INLINE Skipping line in message ${inlineMessageId} (invalid format or data): "${trimmedLine}"`);
                            }
+                       } else {
+                           console.log(`INLINE Skipping line in message ${inlineMessageId} (did not match regex): "${trimmedLine}"`);
+                       }
+                   }
+
+                   // Check if tasks were added and handle labeling/archiving
+                   if (tasksAddedInline > 0) {
+                       console.log(`INLINE: Successfully added ${tasksAddedInline} tasks.`);
+                       // Send confirmation email
+                       try {
+                           MailApp.sendEmail({
+                               to: userEmail,
+                               subject: `Daily Tasks Added: ${tasksAddedInline} tasks created (Inline Process)`,
+                               body: `Successfully added ${tasksAddedInline} tasks from your daily reply.\\n\\nEmail Link: ${inlinePermalink}`
+                           });
+                       } catch (emailError) {
+                           console.error(`INLINE Error sending daily task confirmation email: ${emailError}`);
+                       }
+                       // Mark as processed (use the specific daily label)
+                       messageToParse.markRead();
+                       ensureLabelExists('DailyTaskReply-Processed');
+                       thread.addLabel(GmailApp.getUserLabelByName('DailyTaskReply-Processed'));
+                       processedThreadIds.add(threadId);
+                       // Archive
+                       if (thread.isInInbox()) {
+                           thread.moveToArchive();
                        }
                    } else {
                        console.log(`INLINE: No valid tasks found in the body of message ${inlineMessageId}. Marking processed.`);
+                       // Mark as processed even if no tasks found to avoid retries
+                       messageToParse.markRead();
+                       ensureLabelExists('DailyTaskReply-Processed');
+                       thread.addLabel(GmailApp.getUserLabelByName('DailyTaskReply-Processed'));
+                       processedThreadIds.add(threadId);
                    }
-               } catch (inlineError) {
-                   console.error(`INLINE ERROR processing daily reply thread ${threadId}: ${inlineError}`, inlineError.stack);
+               } catch (inlineProcessingError) {
+                   console.error(`INLINE ERROR processing daily reply. Message ID ${inlineMessageId || 'unknown'}. Error: ${inlineProcessingError}`, inlineProcessingError.stack);
                    // Apply error label if inline processing fails
                    ensureLabelExists('Task-Error-Processed');
                    thread.addLabel(GmailApp.getUserLabelByName('Task-Error-Processed'));
@@ -231,48 +276,34 @@ function processEmailTasks() {
                }
                // ----> END INLINE LOGIC <----
 
-               // Check if tasks were added and handle labeling/archiving
-               if (tasksAddedInline > 0) {
-                   console.log(`INLINE: Successfully added ${tasksAddedInline} tasks.`);
-                   // Send confirmation email
-                   try {
-                       MailApp.sendEmail({
-                           to: userEmail,
-                           subject: `Daily Tasks Added: ${tasksAddedInline} tasks created (Inline Process)`,
-                           body: `Successfully added ${tasksAddedInline} tasks from your daily reply.\n\nEmail Link: ${inlinePermalink}`
-                       });
-                   } catch (emailError) {
-                       console.error(`INLINE Error sending daily task confirmation email: ${emailError}`);
-                   }
-                   // Mark as processed (use the specific daily label)
-                   messageToParse.markRead();
-                   ensureLabelExists('DailyTaskReply-Processed');
-                   thread.addLabel(GmailApp.getUserLabelByName('DailyTaskReply-Processed'));
-                   processedThreadIds.add(threadId);
-                   // Archive
-                   if (thread.isInInbox()) {
-                       thread.moveToArchive();
-                   }
-               } else {
-                   console.log(`INLINE: No valid tasks found in the body of message ${inlineMessageId}. Marking processed.`);
-                   // Mark as processed even if no tasks found to avoid retries
-                   messageToParse.markRead();
-                   ensureLabelExists('DailyTaskReply-Processed');
-                   thread.addLabel(GmailApp.getUserLabelByName('DailyTaskReply-Processed'));
-                   processedThreadIds.add(threadId);
-               }
-               // ----> END INLINE LOGIC <----
-
                continue; // Skip standard processing for this thread since it was handled inline
             }
-            */
-            // --- END DISABLED DAILY REPLY BLOCK ---
+            
+            // --- END UNCOMMENTED DAILY REPLY BLOCK ---
             
             // --- Process Standard Task (#td / #fup) --- (This block is now always executed if not skipped earlier)
             console.log(`Processing as Standard Task (#td/#fup): ${threadId}`);
             try {
-              // Use pre-fetched subject and plainBody
-              const task = parseTaskFormat(subject, emailUrl, plainBody); // Pass fetched subject/body
+              let task; // Declare task variable outside the if/else
+              const lowerCaseSubject = subject.toLowerCase();
+
+              // ---> ADDED: Specific log before decision <---
+              console.log(`DEBUG: Checking subject "${lowerCaseSubject}". Contains #fup? ${lowerCaseSubject.includes('#fup')}. Contains #td? ${lowerCaseSubject.includes('#td')}.`);
+
+              // ---> ADDED: Check if #fup or #td <---
+              if (lowerCaseSubject.includes('#fup')) {
+                console.log('Detected #fup, calling parseFollowUpFormat');
+                task = parseFollowUpFormat(subject, emailUrl);
+              } else if (lowerCaseSubject.includes('#td')) { // Also check for #td explicitly
+                console.log('Detected #td, calling parseTaskFormat');
+                task = parseTaskFormat(subject, emailUrl, plainBody);
+              } else {
+                // This case should technically not be hit due to the initial search query,
+                // but include it defensively.
+                console.warn(`Subject "${subject}" matched general search but lacks specific #fup or #td marker. Skipping parsing.`);
+                task = null; // Ensure task is null if neither marker is found
+              }
+              // ---> END ADDED CHECK <---
               
               if (task) {
                 // --- Add Email Origin Info ---
@@ -282,13 +313,13 @@ function processEmailTasks() {
                 task.emailSubject = subject; // Store original subject if needed later
                 // --- End Add Email Origin Info ---
                 
-                console.log('Parsed Task:', JSON.stringify(task));
-                // Set status to Pending before adding to sheet
-                task.status = 'Pending'; 
-                const addedRow = sheetManager.addTask(task);
+                console.log('Task object received:', JSON.stringify(task)); // More generic log here
+                
+                // Use the task object returned by the correct parser
+                const addedRow = sheetManager.addTask(task); 
                 
                 if (addedRow) {
-                  console.log(`Added task "${task.name}" to sheet row ${addedRow}. Status: Pending.`);
+                  console.log(`Added task "${task.name}" to sheet row ${addedRow}. Status: ${task.status}.`);
                   processedTaskNames.add(task.name); // Track processed name
                   // Apply processed label immediately after successful sheet add
                   ensureLabelExists('Task-Processed');
@@ -359,24 +390,41 @@ function processEmailTasks() {
 function parseFollowUpFormat(subject, emailUrl) {
   // If #FUP is at start, use the rest of the subject
   let taskName;
-  if (subject.toLowerCase().startsWith('#fup')) {
-    taskName = subject.substring(4).trim();
+  const prefix = '#fup';
+  const prefixLength = prefix.length;
+  let remainingPart = ''; // Initialize remainingPart
+
+  if (subject.toLowerCase().startsWith(prefix)) {
+    remainingPart = subject.substring(prefixLength);
   } else {
-    // If #FUP is in the middle, use everything after it
-    taskName = subject.substring(subject.toLowerCase().indexOf('#fup') + 4).trim();
+    // Find the index if #fup is not at the start
+    const index = subject.toLowerCase().indexOf(prefix);
+    if (index !== -1) {
+      remainingPart = subject.substring(index + prefixLength);
+    } else {
+      // Fallback if #fup isn't found (shouldn't happen if called correctly, but safe)
+      remainingPart = subject; 
+    }
+  }
+
+  // Remove leading colon, space, or hyphen if present after the prefix
+  if (remainingPart.startsWith(':') || remainingPart.startsWith(' ') || remainingPart.startsWith('-')) {
+     taskName = remainingPart.substring(1).trim();
+  } else {
+     taskName = remainingPart.trim();
   }
   
   // Clean up task name by removing any Fwd: or Re: prefixes
-  taskName = taskName.replace(/^(Fwd|Re|FWD|RE):\s*/i, '').trim();
+  taskName = taskName.replace(/^(Fwd|Re|FWD|RE):\\s*/i, '').trim();
   
   console.log('Parsed FUP task name:', taskName);
   
   return {
     name: taskName,
-    priority: 'Follow-up',
+    priority: 'Follow-up', // Priority should be Follow-up
     timeBlock: 30, // Default time block for follow-ups
     notes: `Email Link: ${emailUrl}`,
-    status: 'Pending'
+    status: 'Follow-up' // Status should be Follow-up
   };
 }
 
@@ -1527,7 +1575,7 @@ function parseAndAddDailyTasksFromReply(emailMessageObject, userEmail) {
        MailApp.sendEmail({
          to: userEmail,
          subject: `Daily Tasks Added: ${tasksAdded} tasks created`,
-         body: `Successfully added ${tasksAdded} tasks from your daily reply.\n\nEmail Link: ${threadPermalink}`
+         body: `Successfully added ${tasksAdded} tasks from your daily reply.\\n\\nEmail Link: ${threadPermalink}`
        });
      } catch (emailError) {
        console.error(`Error sending daily task confirmation email: ${emailError}`);
